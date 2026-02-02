@@ -372,44 +372,16 @@ with gr.Blocks(title="Legacy Logic Pro") as app:
                 
                 export_file = gr.File(label="Download File", visible=True)
             
-            # History
-            with gr.Tab("📊 History"):
-                gr.Markdown("## Your Document Processing History")
-                refresh_history_btn = gr.Button("🔄 Refresh History", size="lg")
-                history_output = gr.Textbox(label="Recent Activity", lines=10, value="Click 'Refresh History' to load")
-                
-                def load_history(user_id):
-                    if not user_id:
-                        return "Please login first"
-                    try:
-                        # Use new filter syntax
-                        docs = db.collection('documents').where(
-                            filter=FieldFilter('user_id', '==', user_id)
-                        ).order_by('timestamp', direction=firestore.Query.DESCENDING).limit(10).get()
-                        
-                        if not docs:
-                            return "No documents processed yet"
-                        
-                        history_text = ""
-                        for doc in docs:
-                            data = doc.to_dict()
-                            history_text += f"📄 {data.get('filename', 'Unknown')} - {data.get('pages', 0)} pages\\n"
-                        
-                        return history_text
-                    except Exception as e:
-                        print(f"Error loading history: {e}")
-                        return f"Error loading history: {str(e)}"
-                
-                refresh_history_btn.click(
-                    fn=load_history,
-                    inputs=[user_id_state],
-                    outputs=[history_output]
-                )
-            
             # Account
             with gr.Tab("👤 Account"):
                 gr.Markdown("## Account Information")
-                account_info = gr.Markdown("**Status:** Active")
+                gr.Markdown("**Status:** Active")
+                gr.Markdown("---")
+                gr.Markdown("### 🔒 Privacy & Data")
+                gr.Markdown("- ✅ No document content stored in database")
+                gr.Markdown("- ✅ All chat history cleared on logout")
+                gr.Markdown("- ✅ Session data only (temporary)")
+                gr.Markdown("- ✅ Only document counts tracked for analytics")
         
         # Logout Button at Bottom
         gr.Markdown("---")
