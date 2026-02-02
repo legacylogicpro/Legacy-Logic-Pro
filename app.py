@@ -14,7 +14,7 @@ if not firebase_admin._apps:
         "type": os.environ.get("FIREBASE_TYPE"),
         "project_id": os.environ.get("FIREBASE_PROJECT_ID"),
         "private_key_id": os.environ.get("FIREBASE_PRIVATE_KEY_ID"),
-        "private_key": os.environ.get("FIREBASE_PRIVATE_KEY").replace("\\n", "\n"),
+        "private_key": os.environ.get("FIREBASE_PRIVATE_KEY").replace("\\\\n", "\\n"),
         "client_email": os.environ.get("FIREBASE_CLIENT_EMAIL"),
         "client_id": os.environ.get("FIREBASE_CLIENT_ID"),
         "auth_uri": "https://accounts.google.com/o/oauth2/auth",
@@ -107,7 +107,7 @@ def answer_question(question, text_by_page, history, user_id):
     # Add user question to history
     history.append({"role": "user", "content": question})
     
-    context = "\n\n".join([f"Page {page}: {text}" for page, text in text_by_page.items()])
+    context = "\\n\\n".join([f"Page {page}: {text}" for page, text in text_by_page.items()])
     
     prompt = f"""You are a tax document assistant for Chartered Accountants. Answer based ONLY on the document.
 
@@ -229,7 +229,7 @@ custom_css = """
 }
 """
 
-with gr.Blocks(theme=gr.themes.Soft(), title="Legacy Logic Pro", css=custom_css) as app:
+with gr.Blocks(title="Legacy Logic Pro") as app:
     
     # Session state
     user_id_state = gr.State(None)
@@ -299,8 +299,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Legacy Logic Pro", css=custom_css)
                 
                 chatbot = gr.Chatbot(
                     label="Conversation", 
-                    height=400,
-                    type="messages"
+                    height=400
                 )
             
             # History
@@ -321,7 +320,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Legacy Logic Pro", css=custom_css)
                         history_text = ""
                         for doc in docs:
                             data = doc.to_dict()
-                            history_text += f"📄 {data.get('filename', 'Unknown')} - {data.get('pages', 0)} pages\n"
+                            history_text += f"📄 {data.get('filename', 'Unknown')} - {data.get('pages', 0)} pages\\n"
                         
                         return history_text
                     except Exception as e:
@@ -382,7 +381,9 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Legacy Logic Pro", css=custom_css)
 # Launch
 if __name__ == "__main__":
     app.launch(
+        theme=gr.themes.Soft(),
+        css=custom_css,
         server_name="0.0.0.0",
-        server_port=10000,
+        server_port=int(os.environ.get("PORT", 10000)),
         share=False
     )
