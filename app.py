@@ -97,10 +97,15 @@ def process_document(file, user_id):
 
 def answer_question(question, text_by_page, history, user_id):
     if not user_id:
-        return history + [("System", "❌ Please login first")], ""
+        error_msg = {"role": "assistant", "content": "❌ Please login first"}
+        return history + [error_msg], ""
     
     if not text_by_page:
-        return history + [(question, "⚠️ Please upload and process a document first")], ""
+        error_msg = {"role": "assistant", "content": "⚠️ Please upload and process a document first"}
+        return history + [error_msg], ""
+    
+    # Add user question to history
+    history.append({"role": "user", "content": question})
     
     context = "\n\n".join([f"Page {page}: {text}" for page, text in text_by_page.items()])
     
@@ -128,6 +133,9 @@ Answer:"""
         )
         answer = response.choices[0].message.content
         
+        # Add assistant answer to history
+        history.append({"role": "assistant", "content": answer})
+        
         # Save to Firestore
         try:
             db.collection('queries').add({
@@ -139,35 +147,51 @@ Answer:"""
         except:
             pass
         
-        return history + [(question, answer)], ""
+        return history, ""
+        
     except Exception as e:
-        return history + [(question, f"❌ Error: {str(e)}")], ""
+        error_msg = {"role": "assistant", "content": f"❌ Error: {str(e)}"}
+        history.append(error_msg)
+        return history, ""
 
 # ========================
 # AUTHENTICATION
 # ========================
 
 def login_user(email, password):
-    """Authenticate user"""
+    """Authenticate user with better error handling"""
+    
+    # Input validation
+    if not email or not email.strip():
+        return "❌ Please enter an email", None, gr.update(visible=True), gr.update(visible=False)
+    
+    if not password or not password.strip():
+        return "❌ Please enter a password", None, gr.update(visible=True), gr.update(visible=False)
+    
     try:
+        # Query Firestore for user
         users_ref = db.collection('users')
-        query = users_ref.where('email', '==', email).limit(1).get()
+        query = users_ref.where('email', '==', email.strip().lower()).limit(1).get()
         
-        if not query:
-            return "❌ Invalid email or password", None, gr.update(visible=True), gr.update(visible=False)
+        # Check if user exists
+        if not query or len(query) == 0:
+            return "❌ No account found with this email", None, gr.update(visible=True), gr.update(visible=False)
         
+        # Get user data
         user_doc = query[0]
         user_data = user_doc.to_dict()
         
-        # Simple password check (use bcrypt in production!)
-        if user_data.get('password') == password:
+        # Verify password
+        stored_password = user_data.get('password', '')
+        if stored_password == password:
             user_id = user_doc.id
-            return f"✅ Welcome back!", user_id, gr.update(visible=False), gr.update(visible=True)
+            user_name = user_data.get('name', 'User')
+            return f"✅ Welcome back, {user_name}!", user_id, gr.update(visible=False), gr.update(visible=True)
         else:
-            return "❌ Invalid email or password", None, gr.update(visible=True), gr.update(visible=False)
+            return "❌ Incorrect password", None, gr.update(visible=True), gr.update(visible=False)
             
     except Exception as e:
-        return f"❌ Error: {str(e)}", None, gr.update(visible=True), gr.update(visible=False)
+        return f"❌ Login error: {str(e)}", None, gr.update(visible=True), gr.update(visible=False)
 
 def logout_user():
     """Logout user"""
@@ -177,74 +201,112 @@ def logout_user():
 # MAIN UI
 # ========================
 
-with gr.Blocks(theme=gr.themes.Soft(), title="Legacy Logic Pro") as app:
+# Custom CSS for better styling
+custom_css = """
+.login-container {
+    max-width: 500px;
+    margin: 100px auto;
+    padding: 40px;
+}
+.brand-title {
+    font-size: 48px !important;
+    font-weight: bold !important;
+    text-align: center;
+    margin-bottom: 10px;
+}
+.brand-subtitle {
+    font-size: 18px;
+    text-align: center;
+    margin-bottom: 40px;
+    color: #888;
+}
+.logout-btn-container {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 1000;
+}
+"""
+
+with gr.Blocks(theme=gr.themes.Soft(), title="Legacy Logic Pro", css=custom_css) as app:
     
     # Session state
     user_id_state = gr.State(None)
     text_by_page_state = gr.State(None)
     
     # ============ LOGIN SCREEN ============
-    with gr.Column(visible=True) as login_screen:
-        gr.Markdown("""
-        # 🚀 Legacy Logic Pro
-        ## AI-Powered Document Processing for Chartered Accountants
-        ### Login Required
-        """)
+    with gr.Column(visible=True, elem_classes="login-container") as login_screen:
+        gr.Markdown("# **Legacy Logic Pro**", elem_classes="brand-title")
+        gr.Markdown("AI-Powered Document Processing for Chartered Accountants", elem_classes="brand-subtitle")
+        gr.Markdown("---")
         
-        with gr.Row():
-            with gr.Column(scale=1):
-                pass
-            with gr.Column(scale=2):
-                gr.Markdown("### 🔐 Login")
-                email_input = gr.Textbox(label="📧 Email", placeholder="Enter your email")
-                password_input = gr.Textbox(label="🔒 Password", type="password", placeholder="Enter your password")
-                login_btn = gr.Button("Login", variant="primary", size="lg")
-                login_status = gr.Textbox(label="Status", interactive=False, show_label=False)
-            with gr.Column(scale=1):
-                pass
+        gr.Markdown("### 🔐 Login to Continue")
+        email_input = gr.Textbox(
+            label="📧 Email", 
+            placeholder="Enter your email",
+            lines=1
+        )
+        password_input = gr.Textbox(
+            label="🔒 Password", 
+            type="password", 
+            placeholder="Enter your password",
+            lines=1
+        )
+        login_btn = gr.Button("🔓 Login", variant="primary", size="lg")
+        login_status = gr.Textbox(
+            label="", 
+            interactive=False, 
+            show_label=False,
+            container=False
+        )
+        gr.Markdown("---")
+        gr.Markdown("*Contact admin to create an account*", elem_classes="text-center")
     
     # ============ DASHBOARD (Hidden initially) ============
     with gr.Column(visible=False) as dashboard:
         # Header
-        with gr.Row():
-            gr.Markdown("# 🚀 Legacy Logic Pro")
-            with gr.Column(scale=1, min_width=100):
-                logout_btn = gr.Button("🚪 Logout", variant="secondary", size="sm")
-        
+        gr.Markdown("# 🚀 **Legacy Logic Pro**")
         gr.Markdown("### AI-Powered Document Processing for Chartered Accountants")
         gr.Markdown("**With Page-Level Citations** | Built with ❤️ by Tarun in Mumbai")
+        gr.Markdown("---")
         
         # Tabs
         with gr.Tabs():
             # Process Documents
             with gr.Tab("📄 Process Documents"):
                 gr.Markdown("## Upload and Process Documents")
-                gr.Markdown("Upload PDF or image files. System extracts text and tracks page numbers.")
+                gr.Markdown("Upload PDF or image files. System extracts text and tracks page numbers for accurate citations.")
                 
                 file_input = gr.File(
                     label="📁 Upload Document (PDF, PNG, JPG)", 
                     file_types=[".pdf", ".png", ".jpg", ".jpeg"]
                 )
-                process_btn = gr.Button("🔄 Process Document", variant="primary")
+                process_btn = gr.Button("🔄 Process Document", variant="primary", size="lg")
                 process_output = gr.Textbox(label="Status", lines=2)
             
             # Ask Questions
             with gr.Tab("💬 Ask Questions"):
                 gr.Markdown("## Ask Questions About Your Documents")
-                gr.Markdown("Get AI-powered answers with page-level citations.")
+                gr.Markdown("Get AI-powered answers with page-level citations from your processed documents.")
                 
-                chatbot = gr.Chatbot(label="Conversation", height=450)
                 question_input = gr.Textbox(
                     label="Your Question", 
                     placeholder="Ask anything about the uploaded document...",
                     lines=2
                 )
-                ask_btn = gr.Button("📤 Ask Question", variant="primary")
+                ask_btn = gr.Button("📤 Ask Question", variant="primary", size="lg")
+                
+                chatbot = gr.Chatbot(
+                    label="Conversation", 
+                    height=400,
+                    type="messages"
+                )
             
             # History
             with gr.Tab("📊 History"):
                 gr.Markdown("## Your Document Processing History")
-                refresh_history_btn = gr.Button("🔄 Refresh History")
+                refresh_history_btn = gr.Button("🔄 Refresh History", size="lg")
                 history_output = gr.Textbox(label="Recent Activity", lines=10, value="Click 'Refresh History' to load")
                 
                 def load_history(user_id):
@@ -275,6 +337,16 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Legacy Logic Pro") as app:
             with gr.Tab("👤 Account"):
                 gr.Markdown("## Account Information")
                 account_info = gr.Markdown("**Status:** Active")
+        
+        # Logout Button at Bottom
+        gr.Markdown("---")
+        with gr.Row():
+            with gr.Column(scale=2):
+                pass
+            with gr.Column(scale=1):
+                logout_btn = gr.Button("🚪 Logout", variant="secondary", size="lg")
+            with gr.Column(scale=2):
+                pass
     
     # ========================
     # EVENT HANDLERS
