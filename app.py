@@ -67,14 +67,15 @@ def ocr_pdf(pdf_path):
     except Exception as e:
         return {1: f"Error: {str(e)}"}
 
-def process_document(file, user_id):
+def process_document(file, user_id, current_filename):
     if not user_id:
-        return "❌ Please login first", None
+        return "❌ Please login first", None, ""
     
     if file is None:
-        return "❌ No file uploaded", None
+        return "❌ No file uploaded", None, ""
     
     file_ext = file.name.split('.')[-1].lower()
+    filename = file.name.split('/')[-1]
     
     if file_ext == 'pdf':
         text_by_page = extract_text_from_pdf(file.name)
@@ -83,22 +84,27 @@ def process_document(file, user_id):
     elif file_ext in ['png', 'jpg', 'jpeg']:
         text_by_page = extract_text_from_image(file.name)
     else:
-        return "❌ Unsupported file format", None
+        return "❌ Unsupported file format", None, ""
+    
+    # Check if text was extracted
+    total_chars = sum(len(text) for text in text_by_page.values())
+    if total_chars < 10:
+        return "⚠️ Warning: Very little text extracted. Document may be image-based or encrypted.", text_by_page, filename
     
     # Save to Firestore (metadata only)
     try:
         doc_ref = db.collection('documents').add({
             'user_id': user_id,
-            'filename': file.name.split('/')[-1],
+            'filename': filename,
             'timestamp': firestore.SERVER_TIMESTAMP,
             'pages': len(text_by_page)
         })
     except Exception as e:
         print(f"Error saving to Firestore: {e}")
     
-    return "✅ Document processed successfully!", text_by_page
+    return f"✅ Document processed successfully!\n📄 File: {filename}\n📊 Pages: {len(text_by_page)}\n📝 Characters extracted: {total_chars:,}", text_by_page, filename
 
-def answer_question(question, text_by_page, history, user_id):
+def answer_question(question, text_by_page, history, user_id, current_filename):
     if not user_id:
         error_msg = {"role": "assistant", "content": "❌ Please login first"}
         return history + [error_msg], ""
@@ -107,32 +113,51 @@ def answer_question(question, text_by_page, history, user_id):
         error_msg = {"role": "assistant", "content": "⚠️ Please upload and process a document first"}
         return history + [error_msg], ""
     
+    if not question or not question.strip():
+        error_msg = {"role": "assistant", "content": "⚠️ Please enter a question"}
+        return history + [error_msg], ""
+    
     # Add user question to history
     history.append({"role": "user", "content": question})
     
-    context = "\\n\\n".join([f"Page {page}: {text}" for page, text in text_by_page.items()])
+    # Build context with better formatting
+    context_parts = []
+    for page, text in text_by_page.items():
+        context_parts.append(f"=== PAGE {page} ===\n{text.strip()}")
     
-    prompt = f"""You are a tax document assistant for Chartered Accountants. Answer based ONLY on the document.
+    context = "\n\n".join(context_parts)
+    
+    # Check if context is too short
+    if len(context) < 50:
+        error_msg = {"role": "assistant", "content": "❌ Error: Document content is too short or empty. Please upload a valid document with readable text."}
+        history.append(error_msg)
+        return history, ""
+    
+    prompt = f"""You are an AI assistant helping Chartered Accountants analyze tax documents.
 
-Document Content:
+DOCUMENT: {current_filename if current_filename else "Uploaded Document"}
+
+DOCUMENT CONTENT:
 {context}
 
-Question: {question}
+USER QUESTION: {question}
 
-Instructions:
-- Answer ONLY from the document above
-- Cite page numbers using [Page X] format
-- If not in document, say "Information not found"
-- Be precise and professional
+INSTRUCTIONS:
+1. Read the document content carefully
+2. Answer ONLY based on information found in the document above
+3. When you find relevant information, cite the page number using [Page X] format
+4. If the information is not in the document, clearly state "The document does not contain information about [topic]"
+5. Be specific and quote relevant parts of the document when answering
+6. If the document is unclear, mention that and provide the best interpretation
 
-Answer:"""
+ANSWER:"""
     
     try:
         response = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=1024
+            temperature=0.2,
+            max_tokens=2048
         )
         answer = response.choices[0].message.content
         
@@ -142,7 +167,7 @@ Answer:"""
         return history, ""
         
     except Exception as e:
-        error_msg = {"role": "assistant", "content": f"❌ Error: {str(e)}"}
+        error_msg = {"role": "assistant", "content": f"❌ Error communicating with AI: {str(e)}\n\nPlease try again or contact support."}
         history.append(error_msg)
         return history, ""
 
@@ -150,7 +175,7 @@ Answer:"""
 # CHAT HISTORY EXPORT
 # ========================
 
-def export_chat_history(history, user_id):
+def export_chat_history(history, user_id, current_filename):
     """Export chat history as a downloadable text file"""
     if not history or len(history) == 0:
         return None
@@ -164,6 +189,8 @@ def export_chat_history(history, user_id):
         content = "=" * 80 + "\n"
         content += "LEGACY LOGIC PRO - CHAT HISTORY\n"
         content += f"Session Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        if current_filename:
+            content += f"Document: {current_filename}\n"
         content += "=" * 80 + "\n\n"
         
         for i, msg in enumerate(history, 1):
@@ -189,7 +216,7 @@ def export_chat_history(history, user_id):
         print(f"Error exporting chat history: {e}")
         return None
 
-def export_chat_history_json(history, user_id):
+def export_chat_history_json(history, user_id, current_filename):
     """Export chat history as JSON (alternative format)"""
     if not history or len(history) == 0:
         return None
@@ -201,6 +228,7 @@ def export_chat_history_json(history, user_id):
         export_data = {
             "session_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             "user_id": user_id if user_id else "unknown",
+            "document": current_filename if current_filename else "Unknown",
             "messages": history,
             "total_messages": len(history)
         }
@@ -256,7 +284,7 @@ def login_user(email, password):
 
 def logout_user():
     """Logout user"""
-    return None, None, [], "", gr.update(visible=True), gr.update(visible=False), "Logged out"
+    return None, None, [], "", "", gr.update(visible=True), gr.update(visible=False), "Logged out"
 
 # ========================
 # MAIN UI
@@ -295,6 +323,7 @@ with gr.Blocks(title="Legacy Logic Pro") as app:
     # Session state
     user_id_state = gr.State(None)
     text_by_page_state = gr.State(None)
+    current_filename_state = gr.State("")
     
     # ============ LOGIN SCREEN ============
     with gr.Column(visible=True, elem_classes="login-container") as login_screen:
@@ -344,7 +373,7 @@ with gr.Blocks(title="Legacy Logic Pro") as app:
                     file_types=[".pdf", ".png", ".jpg", ".jpeg"]
                 )
                 process_btn = gr.Button("🔄 Process Document", variant="primary", size="lg")
-                process_output = gr.Textbox(label="Status", lines=2)
+                process_output = gr.Textbox(label="Status", lines=4)
             
             # Ask Questions
             with gr.Tab("💬 Ask Questions"):
@@ -360,7 +389,7 @@ with gr.Blocks(title="Legacy Logic Pro") as app:
                 
                 chatbot = gr.Chatbot(
                     label="Conversation", 
-                    height=400
+                    height=500
                 )
                 
                 # Export chat history buttons
@@ -382,6 +411,12 @@ with gr.Blocks(title="Legacy Logic Pro") as app:
                 gr.Markdown("- ✅ All chat history cleared on logout")
                 gr.Markdown("- ✅ Session data only (temporary)")
                 gr.Markdown("- ✅ Only document counts tracked for analytics")
+                gr.Markdown("---")
+                gr.Markdown("### 💡 Tips for Best Results")
+                gr.Markdown("- Upload clear, readable PDFs")
+                gr.Markdown("- Avoid scanned documents with poor quality")
+                gr.Markdown("- Ask specific questions about the document")
+                gr.Markdown("- Reference specific sections when asking")
         
         # Logout Button at Bottom
         gr.Markdown("---")
@@ -407,35 +442,35 @@ with gr.Blocks(title="Legacy Logic Pro") as app:
     # Process Document
     process_btn.click(
         fn=process_document,
-        inputs=[file_input, user_id_state],
-        outputs=[process_output, text_by_page_state]
+        inputs=[file_input, user_id_state, current_filename_state],
+        outputs=[process_output, text_by_page_state, current_filename_state]
     )
     
     # Ask Question
     ask_btn.click(
         fn=answer_question,
-        inputs=[question_input, text_by_page_state, chatbot, user_id_state],
+        inputs=[question_input, text_by_page_state, chatbot, user_id_state, current_filename_state],
         outputs=[chatbot, question_input]
     )
     
     # Export chat history as text
     export_txt_btn.click(
         fn=export_chat_history,
-        inputs=[chatbot, user_id_state],
+        inputs=[chatbot, user_id_state, current_filename_state],
         outputs=[export_file]
     )
     
     # Export chat history as JSON
     export_json_btn.click(
         fn=export_chat_history_json,
-        inputs=[chatbot, user_id_state],
+        inputs=[chatbot, user_id_state, current_filename_state],
         outputs=[export_file]
     )
     
     # Logout
     logout_btn.click(
         fn=logout_user,
-        outputs=[user_id_state, text_by_page_state, chatbot, question_input, login_screen, dashboard, login_status]
+        outputs=[user_id_state, text_by_page_state, current_filename_state, chatbot, question_input, login_screen, dashboard, login_status]
     )
 
 # Launch
