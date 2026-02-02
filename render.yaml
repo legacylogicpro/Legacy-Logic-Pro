@@ -1,11 +1,11 @@
 services:
   - type: web
     name: legacylogicpro
-    env: python
+    env: docker
     region: singapore
     plan: free
-    buildCommand: "apt-get update && apt-get install -y tesseract-ocr tesseract-ocr-eng tesseract-ocr-hin && pip install -r requirements.txt"
-    startCommand: "python app.py"
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
     envVars:
       - key: FIREBASE_TYPE
         sync: false
@@ -23,5 +23,3 @@ services:
         sync: false
       - key: GROQ_API_KEY
         sync: false
-      - key: PYTHON_VERSION
-        value: "3.11.0"
