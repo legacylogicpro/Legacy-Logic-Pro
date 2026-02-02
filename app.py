@@ -7,6 +7,9 @@ import pytesseract
 from pdf2image import convert_from_path
 from PyPDF2 import PdfReader
 from PIL import Image
+from google.cloud.firestore_v1.base_query import FieldFilter
+from datetime import datetime
+import json
 
 # Initialize Firebase
 if not firebase_admin._apps:
@@ -82,7 +85,7 @@ def process_document(file, user_id):
     else:
         return "❌ Unsupported file format", None
     
-    # Save to Firestore
+    # Save to Firestore (metadata only)
     try:
         doc_ref = db.collection('documents').add({
             'user_id': user_id,
@@ -90,8 +93,8 @@ def process_document(file, user_id):
             'timestamp': firestore.SERVER_TIMESTAMP,
             'pages': len(text_by_page)
         })
-    except:
-        pass
+    except Exception as e:
+        print(f"Error saving to Firestore: {e}")
     
     return "✅ Document processed successfully!", text_by_page
 
@@ -136,23 +139,80 @@ Answer:"""
         # Add assistant answer to history
         history.append({"role": "assistant", "content": answer})
         
-        # Save to Firestore
-        try:
-            db.collection('queries').add({
-                'user_id': user_id,
-                'question': question,
-                'answer': answer,
-                'timestamp': firestore.SERVER_TIMESTAMP
-            })
-        except:
-            pass
-        
         return history, ""
         
     except Exception as e:
         error_msg = {"role": "assistant", "content": f"❌ Error: {str(e)}"}
         history.append(error_msg)
         return history, ""
+
+# ========================
+# CHAT HISTORY EXPORT
+# ========================
+
+def export_chat_history(history, user_id):
+    """Export chat history as a downloadable text file"""
+    if not history or len(history) == 0:
+        return None
+    
+    try:
+        # Generate timestamp for filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"chat_history_{timestamp}.txt"
+        
+        # Create formatted text content
+        content = "=" * 80 + "\n"
+        content += "LEGACY LOGIC PRO - CHAT HISTORY\n"
+        content += f"Session Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        content += "=" * 80 + "\n\n"
+        
+        for i, msg in enumerate(history, 1):
+            role = msg.get("role", "unknown").upper()
+            text = msg.get("content", "")
+            
+            content += f"{'-' * 80}\n"
+            content += f"{role} (Message {i}):\n"
+            content += f"{'-' * 80}\n"
+            content += f"{text}\n\n"
+        
+        content += "=" * 80 + "\n"
+        content += "End of Chat History\n"
+        content += "=" * 80 + "\n"
+        
+        # Write to temporary file
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(content)
+        
+        return filename
+    
+    except Exception as e:
+        print(f"Error exporting chat history: {e}")
+        return None
+
+def export_chat_history_json(history, user_id):
+    """Export chat history as JSON (alternative format)"""
+    if not history or len(history) == 0:
+        return None
+    
+    try:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"chat_history_{timestamp}.json"
+        
+        export_data = {
+            "session_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            "user_id": user_id if user_id else "unknown",
+            "messages": history,
+            "total_messages": len(history)
+        }
+        
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(export_data, f, indent=2, ensure_ascii=False)
+        
+        return filename
+    
+    except Exception as e:
+        print(f"Error exporting chat history JSON: {e}")
+        return None
 
 # ========================
 # AUTHENTICATION
@@ -169,9 +229,9 @@ def login_user(email, password):
         return "❌ Please enter a password", None, gr.update(visible=True), gr.update(visible=False)
     
     try:
-        # Query Firestore for user
+        # Query Firestore for user using new filter syntax
         users_ref = db.collection('users')
-        query = users_ref.where('email', '==', email.strip().lower()).limit(1).get()
+        query = users_ref.where(filter=FieldFilter('email', '==', email.strip().lower())).limit(1).get()
         
         # Check if user exists
         if not query or len(query) == 0:
@@ -191,6 +251,7 @@ def login_user(email, password):
             return "❌ Incorrect password", None, gr.update(visible=True), gr.update(visible=False)
             
     except Exception as e:
+        print(f"Login error: {e}")
         return f"❌ Login error: {str(e)}", None, gr.update(visible=True), gr.update(visible=False)
 
 def logout_user():
@@ -301,6 +362,15 @@ with gr.Blocks(title="Legacy Logic Pro") as app:
                     label="Conversation", 
                     height=400
                 )
+                
+                # Export chat history buttons
+                gr.Markdown("---")
+                gr.Markdown("### 💾 Export Current Session")
+                with gr.Row():
+                    export_txt_btn = gr.Button("📄 Download as Text", size="sm", variant="secondary")
+                    export_json_btn = gr.Button("📋 Download as JSON", size="sm", variant="secondary")
+                
+                export_file = gr.File(label="Download File", visible=True)
             
             # History
             with gr.Tab("📊 History"):
@@ -312,7 +382,10 @@ with gr.Blocks(title="Legacy Logic Pro") as app:
                     if not user_id:
                         return "Please login first"
                     try:
-                        docs = db.collection('documents').where('user_id', '==', user_id).order_by('timestamp', direction=firestore.Query.DESCENDING).limit(10).get()
+                        # Use new filter syntax
+                        docs = db.collection('documents').where(
+                            filter=FieldFilter('user_id', '==', user_id)
+                        ).order_by('timestamp', direction=firestore.Query.DESCENDING).limit(10).get()
                         
                         if not docs:
                             return "No documents processed yet"
@@ -324,6 +397,7 @@ with gr.Blocks(title="Legacy Logic Pro") as app:
                         
                         return history_text
                     except Exception as e:
+                        print(f"Error loading history: {e}")
                         return f"Error loading history: {str(e)}"
                 
                 refresh_history_btn.click(
@@ -370,6 +444,20 @@ with gr.Blocks(title="Legacy Logic Pro") as app:
         fn=answer_question,
         inputs=[question_input, text_by_page_state, chatbot, user_id_state],
         outputs=[chatbot, question_input]
+    )
+    
+    # Export chat history as text
+    export_txt_btn.click(
+        fn=export_chat_history,
+        inputs=[chatbot, user_id_state],
+        outputs=[export_file]
+    )
+    
+    # Export chat history as JSON
+    export_json_btn.click(
+        fn=export_chat_history_json,
+        inputs=[chatbot, user_id_state],
+        outputs=[export_file]
     )
     
     # Logout
