@@ -10,6 +10,7 @@ from PIL import Image
 from google.cloud.firestore_v1.base_query import FieldFilter
 from datetime import datetime
 import json
+import traceback
 
 # Initialize Firebase
 if not firebase_admin._apps:
@@ -37,35 +38,74 @@ groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 # ========================
 
 def extract_text_from_pdf(pdf_path):
+    """Extract text from PDF using PyPDF2"""
     try:
+        print(f"Attempting to read PDF: {pdf_path}")
         reader = PdfReader(pdf_path)
         text_by_page = {}
+        
+        print(f"PDF has {len(reader.pages)} pages")
+        
         for page_num, page in enumerate(reader.pages, start=1):
-            text = page.extract_text()
-            if text.strip():
-                text_by_page[page_num] = text
+            try:
+                text = page.extract_text()
+                if text and text.strip():
+                    text_by_page[page_num] = text.strip()
+                    print(f"Page {page_num}: Extracted {len(text)} characters")
+                else:
+                    print(f"Page {page_num}: No text found")
+            except Exception as e:
+                print(f"Error extracting page {page_num}: {e}")
+                text_by_page[page_num] = f"[Error reading page {page_num}]"
+        
+        if not text_by_page:
+            print("No text extracted from any page")
+            return {1: "[No text could be extracted from PDF]"}
+            
         return text_by_page
+        
     except Exception as e:
-        return {1: f"Error: {str(e)}"}
+        print(f"PDF reading error: {e}")
+        print(traceback.format_exc())
+        return {1: f"Error reading PDF: {str(e)}"}
 
 def extract_text_from_image(image_path):
+    """Extract text from image using OCR"""
     try:
+        print(f"Attempting OCR on image: {image_path}")
         img = Image.open(image_path)
         text = pytesseract.image_to_string(img)
+        print(f"OCR extracted {len(text)} characters")
         return {1: text}
     except Exception as e:
+        print(f"Image OCR error: {e}")
         return {1: f"Error: {str(e)}"}
 
 def ocr_pdf(pdf_path):
+    """OCR scanned PDF using pdf2image and pytesseract"""
     try:
-        images = convert_from_path(pdf_path)
+        print(f"Attempting OCR on PDF: {pdf_path}")
+        images = convert_from_path(pdf_path, dpi=300)
         text_by_page = {}
+        
+        print(f"PDF converted to {len(images)} images")
+        
         for page_num, image in enumerate(images, start=1):
-            text = pytesseract.image_to_string(image)
-            text_by_page[page_num] = text
-        return text_by_page
+            try:
+                text = pytesseract.image_to_string(image)
+                if text and text.strip():
+                    text_by_page[page_num] = text.strip()
+                    print(f"OCR Page {page_num}: Extracted {len(text)} characters")
+            except Exception as e:
+                print(f"OCR error on page {page_num}: {e}")
+                text_by_page[page_num] = f"[OCR error on page {page_num}]"
+        
+        return text_by_page if text_by_page else {1: "[OCR failed to extract text]"}
+        
     except Exception as e:
-        return {1: f"Error: {str(e)}"}
+        print(f"PDF OCR error: {e}")
+        print(traceback.format_exc())
+        return {1: f"OCR Error: {str(e)}. PDF may need poppler-utils installed."}
 
 def process_document(file, user_id, current_filename):
     if not user_id:
@@ -74,22 +114,57 @@ def process_document(file, user_id, current_filename):
     if file is None:
         return "❌ No file uploaded", None, ""
     
+    print(f"\n{'='*80}")
+    print(f"Processing file: {file.name}")
+    print(f"{'='*80}")
+    
     file_ext = file.name.split('.')[-1].lower()
     filename = file.name.split('/')[-1]
     
+    text_by_page = {}
+    
     if file_ext == 'pdf':
+        # First try PyPDF2 for text extraction
+        print("Step 1: Trying PyPDF2 text extraction...")
         text_by_page = extract_text_from_pdf(file.name)
-        if not any(text_by_page.values()) or all(len(t.strip()) < 50 for t in text_by_page.values()):
-            text_by_page = ocr_pdf(file.name)
+        
+        # Check if extraction was successful
+        total_chars = sum(len(text) for text in text_by_page.values() if not text.startswith('['))
+        
+        print(f"PyPDF2 extracted {total_chars} characters from {len(text_by_page)} pages")
+        
+        # If very little text or errors, try OCR
+        if total_chars < 100 or any('[' in str(text) for text in text_by_page.values()):
+            print("Step 2: Text extraction insufficient, trying OCR...")
+            ocr_result = ocr_pdf(file.name)
+            
+            # Use OCR result if it's better
+            ocr_chars = sum(len(text) for text in ocr_result.values() if not text.startswith('['))
+            print(f"OCR extracted {ocr_chars} characters")
+            
+            if ocr_chars > total_chars:
+                print("Using OCR result (better extraction)")
+                text_by_page = ocr_result
+                total_chars = ocr_chars
+            else:
+                print("Keeping PyPDF2 result")
+                
     elif file_ext in ['png', 'jpg', 'jpeg']:
+        print("Processing image file with OCR...")
         text_by_page = extract_text_from_image(file.name)
+        total_chars = sum(len(text) for text in text_by_page.values())
     else:
         return "❌ Unsupported file format", None, ""
     
-    # Check if text was extracted
-    total_chars = sum(len(text) for text in text_by_page.values())
-    if total_chars < 10:
-        return "⚠️ Warning: Very little text extracted. Document may be image-based or encrypted.", text_by_page, filename
+    # Final validation
+    if total_chars < 50:
+        error_msg = f"⚠️ Warning: Only {total_chars} characters extracted.\n"
+        error_msg += "Document may be:\n"
+        error_msg += "- Encrypted/password protected\n"
+        error_msg += "- Scanned image without OCR\n"
+        error_msg += "- Corrupted file\n"
+        error_msg += f"\nExtracted content preview:\n{list(text_by_page.values())[0][:200]}"
+        return error_msg, text_by_page, filename
     
     # Save to Firestore (metadata only)
     try:
@@ -97,12 +172,24 @@ def process_document(file, user_id, current_filename):
             'user_id': user_id,
             'filename': filename,
             'timestamp': firestore.SERVER_TIMESTAMP,
-            'pages': len(text_by_page)
+            'pages': len(text_by_page),
+            'characters': total_chars
         })
+        print(f"Saved metadata to Firestore")
     except Exception as e:
-        print(f"Error saving to Firestore: {e}")
+        print(f"Firestore save error: {e}")
     
-    return f"✅ Document processed successfully!\n📄 File: {filename}\n📊 Pages: {len(text_by_page)}\n📝 Characters extracted: {total_chars:,}", text_by_page, filename
+    success_msg = f"✅ Document processed successfully!\n"
+    success_msg += f"📄 File: {filename}\n"
+    success_msg += f"📊 Pages: {len(text_by_page)}\n"
+    success_msg += f"📝 Characters extracted: {total_chars:,}\n"
+    success_msg += f"\nFirst 200 characters:\n{list(text_by_page.values())[0][:200]}..."
+    
+    print(f"\n{'='*80}")
+    print("Processing complete!")
+    print(f"{'='*80}\n")
+    
+    return success_msg, text_by_page, filename
 
 def answer_question(question, text_by_page, history, user_id, current_filename):
     if not user_id:
@@ -123,7 +210,9 @@ def answer_question(question, text_by_page, history, user_id, current_filename):
     # Build context with better formatting
     context_parts = []
     for page, text in text_by_page.items():
-        context_parts.append(f"=== PAGE {page} ===\n{text.strip()}")
+        # Skip error messages in context
+        if not text.startswith('[') and not text.startswith('Error'):
+            context_parts.append(f"=== PAGE {page} ===\n{text.strip()}")
     
     context = "\n\n".join(context_parts)
     
@@ -133,7 +222,10 @@ def answer_question(question, text_by_page, history, user_id, current_filename):
         history.append(error_msg)
         return history, ""
     
-    prompt = f"""You are an AI assistant helping Chartered Accountants analyze tax documents.
+    print(f"\nAnswering question: {question}")
+    print(f"Context length: {len(context)} characters")
+    
+    prompt = f"""You are an AI assistant helping Chartered Accountants analyze documents.
 
 DOCUMENT: {current_filename if current_filename else "Uploaded Document"}
 
@@ -153,6 +245,7 @@ INSTRUCTIONS:
 ANSWER:"""
     
     try:
+        print("Sending to Groq API...")
         response = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
@@ -160,6 +253,7 @@ ANSWER:"""
             max_tokens=2048
         )
         answer = response.choices[0].message.content
+        print(f"Received answer: {len(answer)} characters")
         
         # Add assistant answer to history
         history.append({"role": "assistant", "content": answer})
@@ -167,6 +261,7 @@ ANSWER:"""
         return history, ""
         
     except Exception as e:
+        print(f"Groq API error: {e}")
         error_msg = {"role": "assistant", "content": f"❌ Error communicating with AI: {str(e)}\n\nPlease try again or contact support."}
         history.append(error_msg)
         return history, ""
@@ -181,11 +276,9 @@ def export_chat_history(history, user_id, current_filename):
         return None
     
     try:
-        # Generate timestamp for filename
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"chat_history_{timestamp}.txt"
         
-        # Create formatted text content
         content = "=" * 80 + "\n"
         content += "LEGACY LOGIC PRO - CHAT HISTORY\n"
         content += f"Session Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
@@ -206,7 +299,6 @@ def export_chat_history(history, user_id, current_filename):
         content += "End of Chat History\n"
         content += "=" * 80 + "\n"
         
-        # Write to temporary file
         with open(filename, 'w', encoding='utf-8') as f:
             f.write(content)
         
@@ -217,7 +309,7 @@ def export_chat_history(history, user_id, current_filename):
         return None
 
 def export_chat_history_json(history, user_id, current_filename):
-    """Export chat history as JSON (alternative format)"""
+    """Export chat history as JSON"""
     if not history or len(history) == 0:
         return None
     
@@ -247,9 +339,7 @@ def export_chat_history_json(history, user_id, current_filename):
 # ========================
 
 def login_user(email, password):
-    """Authenticate user with better error handling"""
-    
-    # Input validation
+    """Authenticate user"""
     if not email or not email.strip():
         return "❌ Please enter an email", None, gr.update(visible=True), gr.update(visible=False)
     
@@ -257,19 +347,15 @@ def login_user(email, password):
         return "❌ Please enter a password", None, gr.update(visible=True), gr.update(visible=False)
     
     try:
-        # Query Firestore for user using new filter syntax
         users_ref = db.collection('users')
         query = users_ref.where(filter=FieldFilter('email', '==', email.strip().lower())).limit(1).get()
         
-        # Check if user exists
         if not query or len(query) == 0:
             return "❌ No account found with this email", None, gr.update(visible=True), gr.update(visible=False)
         
-        # Get user data
         user_doc = query[0]
         user_data = user_doc.to_dict()
         
-        # Verify password
         stored_password = user_data.get('password', '')
         if stored_password == password:
             user_id = user_doc.id
@@ -290,7 +376,6 @@ def logout_user():
 # MAIN UI
 # ========================
 
-# Custom CSS for better styling
 custom_css = """
 .login-container {
     max-width: 500px;
@@ -309,90 +394,51 @@ custom_css = """
     margin-bottom: 40px;
     color: #888;
 }
-.logout-btn-container {
-    position: fixed;
-    bottom: 20px;
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 1000;
-}
 """
 
 with gr.Blocks(title="Legacy Logic Pro") as app:
     
-    # Session state
     user_id_state = gr.State(None)
     text_by_page_state = gr.State(None)
     current_filename_state = gr.State("")
     
-    # ============ LOGIN SCREEN ============
     with gr.Column(visible=True, elem_classes="login-container") as login_screen:
         gr.Markdown("# **Legacy Logic Pro**", elem_classes="brand-title")
         gr.Markdown("AI-Powered Document Processing for Chartered Accountants", elem_classes="brand-subtitle")
         gr.Markdown("---")
         
         gr.Markdown("### 🔐 Login to Continue")
-        email_input = gr.Textbox(
-            label="📧 Email", 
-            placeholder="Enter your email",
-            lines=1
-        )
-        password_input = gr.Textbox(
-            label="🔒 Password", 
-            type="password", 
-            placeholder="Enter your password",
-            lines=1
-        )
+        email_input = gr.Textbox(label="📧 Email", placeholder="Enter your email", lines=1)
+        password_input = gr.Textbox(label="🔒 Password", type="password", placeholder="Enter your password", lines=1)
         login_btn = gr.Button("🔓 Login", variant="primary", size="lg")
-        login_status = gr.Textbox(
-            label="", 
-            interactive=False, 
-            show_label=False,
-            container=False
-        )
+        login_status = gr.Textbox(label="", interactive=False, show_label=False, container=False)
         gr.Markdown("---")
-        gr.Markdown("*Contact admin to create an account*", elem_classes="text-center")
+        gr.Markdown("*Contact admin to create an account*")
     
-    # ============ DASHBOARD (Hidden initially) ============
     with gr.Column(visible=False) as dashboard:
-        # Header
         gr.Markdown("# 🚀 **Legacy Logic Pro**")
         gr.Markdown("### AI-Powered Document Processing for Chartered Accountants")
         gr.Markdown("**With Page-Level Citations** | Built with ❤️ by Tarun in Mumbai")
         gr.Markdown("---")
         
-        # Tabs
         with gr.Tabs():
-            # Process Documents
             with gr.Tab("📄 Process Documents"):
                 gr.Markdown("## Upload and Process Documents")
                 gr.Markdown("Upload PDF or image files. System extracts text and tracks page numbers for accurate citations.")
                 
-                file_input = gr.File(
-                    label="📁 Upload Document (PDF, PNG, JPG)", 
-                    file_types=[".pdf", ".png", ".jpg", ".jpeg"]
-                )
+                file_input = gr.File(label="📁 Upload Document (PDF, PNG, JPG)", file_types=[".pdf", ".png", ".jpg", ".jpeg"])
                 process_btn = gr.Button("🔄 Process Document", variant="primary", size="lg")
-                process_output = gr.Textbox(label="Status", lines=4)
+                process_output = gr.Textbox(label="Status", lines=8)
             
-            # Ask Questions
             with gr.Tab("💬 Ask Questions"):
                 gr.Markdown("## Ask Questions About Your Documents")
                 gr.Markdown("Get AI-powered answers with page-level citations from your processed documents.")
                 
-                question_input = gr.Textbox(
-                    label="Your Question", 
-                    placeholder="Ask anything about the uploaded document...",
-                    lines=2
-                )
+                question_input = gr.Textbox(label="Your Question", placeholder="Ask anything about the uploaded document...", lines=2)
                 ask_btn = gr.Button("📤 Ask Question", variant="primary", size="lg")
                 
-                chatbot = gr.Chatbot(
-                    label="Conversation", 
-                    height=500
-                )
+                chatbot = gr.Chatbot(label="Conversation", height=500)
                 
-                # Export chat history buttons
                 gr.Markdown("---")
                 gr.Markdown("### 💾 Export Current Session")
                 with gr.Row():
@@ -401,7 +447,6 @@ with gr.Blocks(title="Legacy Logic Pro") as app:
                 
                 export_file = gr.File(label="Download File", visible=True)
             
-            # Account
             with gr.Tab("👤 Account"):
                 gr.Markdown("## Account Information")
                 gr.Markdown("**Status:** Active")
@@ -411,14 +456,7 @@ with gr.Blocks(title="Legacy Logic Pro") as app:
                 gr.Markdown("- ✅ All chat history cleared on logout")
                 gr.Markdown("- ✅ Session data only (temporary)")
                 gr.Markdown("- ✅ Only document counts tracked for analytics")
-                gr.Markdown("---")
-                gr.Markdown("### 💡 Tips for Best Results")
-                gr.Markdown("- Upload clear, readable PDFs")
-                gr.Markdown("- Avoid scanned documents with poor quality")
-                gr.Markdown("- Ask specific questions about the document")
-                gr.Markdown("- Reference specific sections when asking")
         
-        # Logout Button at Bottom
         gr.Markdown("---")
         with gr.Row():
             with gr.Column(scale=2):
@@ -428,52 +466,13 @@ with gr.Blocks(title="Legacy Logic Pro") as app:
             with gr.Column(scale=2):
                 pass
     
-    # ========================
-    # EVENT HANDLERS
-    # ========================
-    
-    # Login
-    login_btn.click(
-        fn=login_user,
-        inputs=[email_input, password_input],
-        outputs=[login_status, user_id_state, login_screen, dashboard]
-    )
-    
-    # Process Document
-    process_btn.click(
-        fn=process_document,
-        inputs=[file_input, user_id_state, current_filename_state],
-        outputs=[process_output, text_by_page_state, current_filename_state]
-    )
-    
-    # Ask Question
-    ask_btn.click(
-        fn=answer_question,
-        inputs=[question_input, text_by_page_state, chatbot, user_id_state, current_filename_state],
-        outputs=[chatbot, question_input]
-    )
-    
-    # Export chat history as text
-    export_txt_btn.click(
-        fn=export_chat_history,
-        inputs=[chatbot, user_id_state, current_filename_state],
-        outputs=[export_file]
-    )
-    
-    # Export chat history as JSON
-    export_json_btn.click(
-        fn=export_chat_history_json,
-        inputs=[chatbot, user_id_state, current_filename_state],
-        outputs=[export_file]
-    )
-    
-    # Logout
-    logout_btn.click(
-        fn=logout_user,
-        outputs=[user_id_state, text_by_page_state, current_filename_state, chatbot, question_input, login_screen, dashboard, login_status]
-    )
+    login_btn.click(fn=login_user, inputs=[email_input, password_input], outputs=[login_status, user_id_state, login_screen, dashboard])
+    process_btn.click(fn=process_document, inputs=[file_input, user_id_state, current_filename_state], outputs=[process_output, text_by_page_state, current_filename_state])
+    ask_btn.click(fn=answer_question, inputs=[question_input, text_by_page_state, chatbot, user_id_state, current_filename_state], outputs=[chatbot, question_input])
+    export_txt_btn.click(fn=export_chat_history, inputs=[chatbot, user_id_state, current_filename_state], outputs=[export_file])
+    export_json_btn.click(fn=export_chat_history_json, inputs=[chatbot, user_id_state, current_filename_state], outputs=[export_file])
+    logout_btn.click(fn=logout_user, outputs=[user_id_state, text_by_page_state, current_filename_state, chatbot, question_input, login_screen, dashboard, login_status])
 
-# Launch
 if __name__ == "__main__":
     app.launch(
         theme=gr.themes.Soft(),
