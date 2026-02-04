@@ -76,15 +76,12 @@ def ocr_image_with_google_vision(image):
     try:
         import requests
         
-        # Convert PIL Image to bytes
         img_byte_arr = io.BytesIO()
         image.save(img_byte_arr, format='PNG')
         img_byte_arr = img_byte_arr.getvalue()
         
-        # Encode to base64
         image_base64 = base64.b64encode(img_byte_arr).decode('utf-8')
         
-        # Call Google Vision API
         url = f"https://vision.googleapis.com/v1/images:annotate?key={GOOGLE_VISION_API_KEY}"
         
         payload = {
@@ -115,7 +112,6 @@ def ocr_pdf_with_cloud(pdf_path):
         print(f"🔍 OCR Processing (Cloud): {pdf_path.split('/')[-1]}")
         print(f"{'='*60}")
         
-        # Convert PDF to images
         images = convert_from_path(pdf_path, dpi=200)
         total_pages = len(images)
         text_by_page = {}
@@ -162,13 +158,11 @@ def process_document(file, user_id, current_filename):
     if file_ext != 'pdf':
         return "❌ Only PDF files are supported", None, ""
     
-    # Step 1: Try fast text extraction
     print("⏳ Step 1/2: Extracting text from PDF...")
     
     text_by_page = extract_text_from_pdf_fast(file.name)
     extraction_method = "Text Extraction"
     
-    # Step 2: If text extraction failed, try cloud OCR
     if not text_by_page:
         if not GOOGLE_VISION_API_KEY:
             error_msg = "⚠️ **No readable text found**\n\n"
@@ -190,13 +184,11 @@ def process_document(file, user_id, current_filename):
     
     total_chars = sum(len(text) for text in text_by_page.values())
     
-    # Validate
     if total_chars < 100:
         error_msg = f"⚠️ **Insufficient text: {total_chars} characters**\n"
         error_msg += "Document may be empty or corrupted."
         return error_msg, None, ""
     
-    # Save metadata
     try:
         db.collection('documents').add({
             'user_id': user_id,
@@ -209,7 +201,6 @@ def process_document(file, user_id, current_filename):
     except Exception as e:
         print(f"Firestore error: {e}")
     
-    # Success message
     success_msg = f"✅ **Document Processed Successfully!**\n\n"
     success_msg += f"📄 **File:** {filename}\n"
     success_msg += f"📊 **Pages:** {len(text_by_page)}\n"
@@ -236,7 +227,6 @@ def answer_question(question, text_by_page, history, user_id, current_filename):
     
     history.append({"role": "user", "content": question})
     
-    # Build context
     context_parts = []
     for page, text in text_by_page.items():
         context_parts.append(f"=== PAGE {page} ===\n{text.strip()}")
@@ -376,6 +366,9 @@ def logout_user():
 # UI
 # ========================
 
+# Logo as base64 (embedded - no file needed)
+LOGO_BASE64 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+
 custom_css = """
 .login-container {
     max-width: 500px; 
@@ -387,39 +380,38 @@ custom_css = """
     margin-bottom: 30px;
 }
 .logo-img {
-    width: 120px;
-    height: 120px;
+    width: 100px;
+    height: 100px;
     margin: 0 auto 20px;
     display: block;
+    border-radius: 20px;
 }
 .brand-title {
-    font-size: 42px !important; 
+    font-size: 38px !important; 
     font-weight: bold !important; 
     text-align: center; 
     margin-bottom: 10px;
-    background: linear-gradient(135deg, #2563EB 0%, #8B5CF6 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
 }
 .brand-subtitle {
-    font-size: 16px; 
+    font-size: 15px; 
     text-align: center; 
     margin-bottom: 30px; 
     color: #888;
 }
 .dashboard-header {
     text-align: center;
-    margin-bottom: 20px;
+    margin-bottom: 15px;
 }
 .dashboard-logo {
-    width: 80px;
-    height: 80px;
-    margin: 0 auto 15px;
+    width: 60px;
+    height: 60px;
+    margin: 0 auto 10px;
     display: block;
+    border-radius: 12px;
 }
 """
 
-with gr.Blocks(title="Legacy Logic Pro") as app:
+with gr.Blocks(title="Legacy Logic Pro", css=custom_css) as app:
     
     user_id_state = gr.State(None)
     text_by_page_state = gr.State(None)
@@ -427,14 +419,14 @@ with gr.Blocks(title="Legacy Logic Pro") as app:
     
     # ============ LOGIN SCREEN ============
     with gr.Column(visible=True, elem_classes="login-container") as login_screen:
-        # Logo
-        gr.HTML("""
-            <div class="logo-container">
-                <img src="file/logo.png" class="logo-img" alt="Legacy Logic Pro Logo">
-            </div>
+        # Logo with rocket emoji as placeholder
+        gr.Markdown("""
+        <div class="logo-container">
+            <div style="font-size: 80px; margin-bottom: 20px;">🚀</div>
+        </div>
         """)
         
-        gr.Markdown("# **Legacy Logic Pro**", elem_classes="brand-title")
+        gr.Markdown("# 🚀 Legacy Logic Pro", elem_classes="brand-title")
         gr.Markdown("AI-Powered Document Processing for Chartered Accountants", elem_classes="brand-subtitle")
         gr.Markdown("---")
         
@@ -448,20 +440,19 @@ with gr.Blocks(title="Legacy Logic Pro") as app:
     
     # ============ DASHBOARD ============
     with gr.Column(visible=False) as dashboard:
-        # Header with logo
-        gr.HTML("""
-            <div class="dashboard-header">
-                <img src="file/logo.png" class="dashboard-logo" alt="Legacy Logic Pro">
-            </div>
+        # Header with emoji logo
+        gr.Markdown("""
+        <div class="dashboard-header">
+            <div style="font-size: 50px; margin-bottom: 10px;">🚀</div>
+        </div>
         """)
         
         gr.Markdown("# 🚀 **Legacy Logic Pro**")
         gr.Markdown("### AI-Powered Document Processing for Chartered Accountants")
-        gr.Markdown("**With Page-Level Citations** | Built by Tarun")
+        gr.Markdown("**With Page-Level Citations** | Built by Tarun.")
         gr.Markdown("---")
         
         with gr.Tabs():
-            # Process Documents
             with gr.Tab("📄 Process Documents"):
                 gr.Markdown("## Upload and Process Documents")
                 gr.Markdown("⚡ **Smart Processing:** Fast text extraction + Cloud OCR fallback")
@@ -471,7 +462,6 @@ with gr.Blocks(title="Legacy Logic Pro") as app:
                 process_btn = gr.Button("🔄 Process Document", variant="primary", size="lg")
                 process_output = gr.Textbox(label="Status", lines=10)
             
-            # Ask Questions
             with gr.Tab("💬 Ask Questions"):
                 gr.Markdown("## Ask Questions About Your Documents")
                 gr.Markdown("Get AI-powered answers with page-level citations")
@@ -487,7 +477,6 @@ with gr.Blocks(title="Legacy Logic Pro") as app:
                     export_json_btn = gr.Button("📋 Download as JSON", size="sm", variant="secondary")
                 export_file = gr.File(label="Download")
             
-            # Account
             with gr.Tab("👤 Account"):
                 gr.Markdown("## Account Information")
                 gr.Markdown("**Status:** Active")
@@ -519,10 +508,7 @@ with gr.Blocks(title="Legacy Logic Pro") as app:
 
 if __name__ == "__main__":
     app.launch(
-        theme=gr.themes.Soft(),
-        css=custom_css,
         server_name="0.0.0.0",
         server_port=int(os.environ.get("PORT", 10000)),
-        share=False,
-        favicon_path="favicon.ico"
+        share=False
     )
