@@ -23,3 +23,5 @@ services:
         sync: false
       - key: GROQ_API_KEY
         sync: false
+      - key: GOOGLE_CLOUD_VISION_API_KEY  # ADD THIS
+        sync: false
