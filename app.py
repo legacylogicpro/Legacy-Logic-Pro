@@ -366,9 +366,6 @@ def logout_user():
 # UI
 # ========================
 
-# Logo as base64 (embedded - no file needed)
-LOGO_BASE64 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
-
 custom_css = """
 .login-container {
     max-width: 500px; 
@@ -378,13 +375,6 @@ custom_css = """
 .logo-container {
     text-align: center;
     margin-bottom: 30px;
-}
-.logo-img {
-    width: 100px;
-    height: 100px;
-    margin: 0 auto 20px;
-    display: block;
-    border-radius: 20px;
 }
 .brand-title {
     font-size: 38px !important; 
@@ -398,20 +388,10 @@ custom_css = """
     margin-bottom: 30px; 
     color: #888;
 }
-.dashboard-header {
-    text-align: center;
-    margin-bottom: 15px;
-}
-.dashboard-logo {
-    width: 60px;
-    height: 60px;
-    margin: 0 auto 10px;
-    display: block;
-    border-radius: 12px;
-}
 """
 
-with gr.Blocks(title="Legacy Logic Pro", css=custom_css) as app:
+# Gradio 6.0 compatible
+with gr.Blocks(title="Legacy Logic Pro") as app:
     
     user_id_state = gr.State(None)
     text_by_page_state = gr.State(None)
@@ -419,12 +399,11 @@ with gr.Blocks(title="Legacy Logic Pro", css=custom_css) as app:
     
     # ============ LOGIN SCREEN ============
     with gr.Column(visible=True, elem_classes="login-container") as login_screen:
-        # Logo with rocket emoji as placeholder
-        gr.Markdown("""
-        <div class="logo-container">
-            <div style="font-size: 80px; margin-bottom: 20px;">🚀</div>
-        </div>
-        """)
+        # Logo - Use your actual logo if file exists, otherwise emoji
+        if os.path.exists("logo.png"):
+            gr.Image("logo.png", height=120, width=120, show_label=False, show_download_button=False, container=False, elem_classes="logo-container")
+        else:
+            gr.Markdown('<div class="logo-container"><div style="font-size: 80px;">🚀</div></div>')
         
         gr.Markdown("# 🚀 Legacy Logic Pro", elem_classes="brand-title")
         gr.Markdown("AI-Powered Document Processing for Chartered Accountants", elem_classes="brand-subtitle")
@@ -440,23 +419,22 @@ with gr.Blocks(title="Legacy Logic Pro", css=custom_css) as app:
     
     # ============ DASHBOARD ============
     with gr.Column(visible=False) as dashboard:
-        # Header with emoji logo
-        gr.Markdown("""
-        <div class="dashboard-header">
-            <div style="font-size: 50px; margin-bottom: 10px;">🚀</div>
-        </div>
-        """)
+        # Dashboard logo
+        if os.path.exists("logo.png"):
+            gr.Image("logo.png", height=70, width=70, show_label=False, show_download_button=False, container=False)
+        else:
+            gr.Markdown('<div style="text-align: center; font-size: 50px; margin-bottom: 10px;">🚀</div>')
         
         gr.Markdown("# 🚀 **Legacy Logic Pro**")
         gr.Markdown("### AI-Powered Document Processing for Chartered Accountants")
-        gr.Markdown("**With Page-Level Citations** | Built by Tarun.")
+        gr.Markdown("**With Page-Level Citations** | Built by Tarun")
         gr.Markdown("---")
         
         with gr.Tabs():
             with gr.Tab("📄 Process Documents"):
                 gr.Markdown("## Upload and Process Documents")
                 gr.Markdown("⚡ **Smart Processing:** Fast text extraction + Cloud OCR fallback")
-                gr.Markdown("📝 **Supports:** Text PDFs (~5-10 sec) & Scanned PDFs (~30-60 sec with OCR)")
+                gr.Markdown("📝 **Supports:** Text PDFs (~5-10 sec) & Scanned PDFs (~30-60 sec)")
                 
                 file_input = gr.File(label="📁 Upload PDF Document", file_types=[".pdf"])
                 process_btn = gr.Button("🔄 Process Document", variant="primary", size="lg")
@@ -464,33 +442,27 @@ with gr.Blocks(title="Legacy Logic Pro", css=custom_css) as app:
             
             with gr.Tab("💬 Ask Questions"):
                 gr.Markdown("## Ask Questions About Your Documents")
-                gr.Markdown("Get AI-powered answers with page-level citations")
                 
-                question_input = gr.Textbox(label="Your Question", placeholder="Ask anything about the document...", lines=2)
+                question_input = gr.Textbox(label="Your Question", placeholder="Ask anything...", lines=2)
                 ask_btn = gr.Button("📤 Ask Question", variant="primary", size="lg")
                 chatbot = gr.Chatbot(label="Conversation", height=500)
                 
                 gr.Markdown("---")
-                gr.Markdown("### 💾 Export Current Session")
+                gr.Markdown("### 💾 Export Session")
                 with gr.Row():
-                    export_txt_btn = gr.Button("📄 Download as Text", size="sm", variant="secondary")
-                    export_json_btn = gr.Button("📋 Download as JSON", size="sm", variant="secondary")
+                    export_txt_btn = gr.Button("📄 Text", size="sm", variant="secondary")
+                    export_json_btn = gr.Button("📋 JSON", size="sm", variant="secondary")
                 export_file = gr.File(label="Download")
             
             with gr.Tab("👤 Account"):
                 gr.Markdown("## Account Information")
                 gr.Markdown("**Status:** Active")
                 gr.Markdown("---")
-                gr.Markdown("### 🔒 Privacy & Security")
-                gr.Markdown("- ✅ No document content stored in database")
-                gr.Markdown("- ✅ All chat history cleared on logout")
-                gr.Markdown("- ✅ Session-only data processing")
-                gr.Markdown("- ✅ End-to-end encryption for API calls")
+                gr.Markdown("### 🔒 Privacy")
+                gr.Markdown("- No content stored\n- Session-only\n- Cleared on logout")
                 gr.Markdown("---")
                 gr.Markdown("### ⚡ Performance")
-                gr.Markdown("- **Text PDFs:** ~5-10 seconds processing")
-                gr.Markdown("- **Scanned PDFs:** ~30-60 seconds (Cloud OCR)")
-                gr.Markdown("- **Powered by:** Google Cloud Vision API")
+                gr.Markdown("- Text PDFs: ~5-10 sec\n- Scanned PDFs: ~30-60 sec\n- Google Cloud Vision OCR")
         
         gr.Markdown("---")
         with gr.Row():
@@ -508,6 +480,7 @@ with gr.Blocks(title="Legacy Logic Pro", css=custom_css) as app:
 
 if __name__ == "__main__":
     app.launch(
+        css=custom_css,  # Fixed for Gradio 6.0
         server_name="0.0.0.0",
         server_port=int(os.environ.get("PORT", 10000)),
         share=False
