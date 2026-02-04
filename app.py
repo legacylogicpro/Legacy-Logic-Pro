@@ -4,11 +4,16 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 from groq import Groq
 from PyPDF2 import PdfReader
-from PIL import Image
 from google.cloud.firestore_v1.base_query import FieldFilter
 from datetime import datetime
 import json
 import traceback
+from pdf2image import convert_from_path
+from PIL import Image
+import io
+import base64
+from google.cloud import vision
+from google.oauth2 import service_account
 
 # Initialize Firebase
 if not firebase_admin._apps:
@@ -27,93 +32,128 @@ if not firebase_admin._apps:
     firebase_admin.initialize_app(cred)
 
 db = firestore.client()
-
-# Initialize Groq
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-# Check if OCR dependencies are available
-OCR_AVAILABLE = False
-try:
-    import pytesseract
-    from pdf2image import convert_from_path
-    OCR_AVAILABLE = True
-    print("✅ OCR dependencies available")
-except ImportError as e:
-    print(f"⚠️ OCR not available: {e}")
+# Initialize Google Cloud Vision (use API key method for simplicity)
+GOOGLE_VISION_API_KEY = os.environ.get("GOOGLE_CLOUD_VISION_API_KEY")
 
 # ========================
 # DOCUMENT PROCESSING
 # ========================
 
-def extract_text_from_pdf(pdf_path):
-    """Extract text from PDF using PyPDF2"""
+def extract_text_from_pdf_fast(pdf_path):
+    """Fast text extraction using PyPDF2"""
     try:
-        print(f"\n{'='*80}")
-        print(f"Reading PDF: {pdf_path}")
-        print(f"{'='*80}")
+        print(f"\n{'='*60}")
+        print(f"📄 Extracting text: {pdf_path.split('/')[-1]}")
+        print(f"{'='*60}")
         
         reader = PdfReader(pdf_path)
         total_pages = len(reader.pages)
         text_by_page = {}
         
-        print(f"PDF has {total_pages} pages")
-        
         for page_num, page in enumerate(reader.pages, start=1):
             try:
                 text = page.extract_text()
-                if text and text.strip():
+                if text and len(text.strip()) > 20:
                     text_by_page[page_num] = text.strip()
-                    char_count = len(text.strip())
-                    print(f"✓ Page {page_num}/{total_pages}: {char_count} characters")
+                    print(f"  ✓ Page {page_num}/{total_pages}: {len(text):,} chars")
                 else:
-                    print(f"✗ Page {page_num}/{total_pages}: No text (may be scanned image)")
+                    print(f"  ✗ Page {page_num}/{total_pages}: No text")
             except Exception as e:
-                print(f"✗ Page {page_num}/{total_pages}: Error - {e}")
+                print(f"  ✗ Page {page_num}/{total_pages}: {e}")
         
         total_chars = sum(len(text) for text in text_by_page.values())
-        print(f"\nTotal: {len(text_by_page)} pages, {total_chars:,} characters")
-        print(f"{'='*80}\n")
+        print(f"Total: {total_chars:,} characters from {len(text_by_page)} pages")
+        print(f"{'='*60}\n")
         
-        return text_by_page if text_by_page else {1: "[No readable text found in PDF]"}
+        return text_by_page if total_chars > 100 else None
         
     except Exception as e:
         print(f"PDF Error: {e}")
-        print(traceback.format_exc())
-        return {1: f"Error reading PDF: {str(e)}"}
-
-def extract_text_with_ocr(pdf_path):
-    """Try OCR extraction if available"""
-    if not OCR_AVAILABLE:
         return None
-    
+
+def ocr_image_with_google_vision(image):
+    """OCR single image using Google Cloud Vision API"""
     try:
-        print(f"\n{'='*80}")
-        print(f"Attempting OCR on PDF...")
-        print(f"{'='*80}")
+        import requests
         
+        # Convert PIL Image to bytes
+        img_byte_arr = io.BytesIO()
+        image.save(img_byte_arr, format='PNG')
+        img_byte_arr = img_byte_arr.getvalue()
+        
+        # Encode to base64
+        image_base64 = base64.b64encode(img_byte_arr).decode('utf-8')
+        
+        # Call Google Vision API
+        url = f"https://vision.googleapis.com/v1/images:annotate?key={GOOGLE_VISION_API_KEY}"
+        
+        payload = {
+            "requests": [{
+                "image": {"content": image_base64},
+                "features": [{"type": "DOCUMENT_TEXT_DETECTION"}]
+            }]
+        }
+        
+        response = requests.post(url, json=payload)
+        
+        if response.status_code == 200:
+            result = response.json()
+            if 'responses' in result and len(result['responses']) > 0:
+                if 'fullTextAnnotation' in result['responses'][0]:
+                    return result['responses'][0]['fullTextAnnotation']['text']
+        
+        return ""
+        
+    except Exception as e:
+        print(f"Google Vision OCR Error: {e}")
+        return ""
+
+def ocr_pdf_with_cloud(pdf_path, progress_callback=None):
+    """OCR entire PDF using Google Cloud Vision"""
+    try:
+        print(f"\n{'='*60}")
+        print(f"🔍 OCR Processing (Cloud): {pdf_path.split('/')[-1]}")
+        print(f"{'='*60}")
+        
+        # Convert PDF to images
         images = convert_from_path(pdf_path, dpi=200)
+        total_pages = len(images)
         text_by_page = {}
+        
+        print(f"Converting {total_pages} pages to text...")
         
         for page_num, image in enumerate(images, start=1):
             try:
-                text = pytesseract.image_to_string(image)
+                if progress_callback:
+                    progress_callback(f"OCR processing page {page_num}/{total_pages}...")
+                
+                text = ocr_image_with_google_vision(image)
+                
                 if text and text.strip():
                     text_by_page[page_num] = text.strip()
-                    print(f"✓ OCR Page {page_num}: {len(text)} characters")
+                    print(f"  ✓ Page {page_num}/{total_pages}: {len(text):,} chars")
+                else:
+                    print(f"  ✗ Page {page_num}/{total_pages}: No text")
+                    
             except Exception as e:
-                print(f"✗ OCR Page {page_num}: {e}")
+                print(f"  ✗ Page {page_num}/{total_pages}: {e}")
         
         total_chars = sum(len(text) for text in text_by_page.values())
-        print(f"\nOCR Total: {len(text_by_page)} pages, {total_chars:,} characters")
-        print(f"{'='*80}\n")
+        print(f"OCR Complete: {total_chars:,} characters from {len(text_by_page)} pages")
+        print(f"{'='*60}\n")
         
         return text_by_page if text_by_page else None
         
     except Exception as e:
         print(f"OCR Error: {e}")
+        print(traceback.format_exc())
         return None
 
 def process_document(file, user_id, current_filename):
+    """Process document with smart text extraction + cloud OCR fallback"""
+    
     if not user_id:
         return "❌ Please login first", None, ""
     
@@ -124,41 +164,45 @@ def process_document(file, user_id, current_filename):
     filename = file.name.split('/')[-1]
     
     if file_ext != 'pdf':
-        return "❌ Only PDF files are currently supported", None, ""
+        return "❌ Only PDF files are supported", None, ""
     
-    # Try standard text extraction first
-    text_by_page = extract_text_from_pdf(file.name)
-    total_chars = sum(len(text) for text in text_by_page.values() if not text.startswith('['))
+    # Step 1: Try fast text extraction
+    status_msg = "⏳ Step 1/2: Extracting text from PDF..."
+    print(status_msg)
     
+    text_by_page = extract_text_from_pdf_fast(file.name)
     extraction_method = "Text Extraction"
     
-    # If very little text found, try OCR
-    if total_chars < 500 and OCR_AVAILABLE:
-        print("Low text count, attempting OCR...")
-        ocr_result = extract_text_with_ocr(file.name)
-        if ocr_result:
-            ocr_chars = sum(len(text) for text in ocr_result.values())
-            if ocr_chars > total_chars:
-                text_by_page = ocr_result
-                total_chars = ocr_chars
-                extraction_method = "OCR"
+    # Step 2: If text extraction failed, try cloud OCR
+    if not text_by_page:
+        if not GOOGLE_VISION_API_KEY:
+            error_msg = "⚠️ **No readable text found**\n\n"
+            error_msg += "This PDF appears to be scanned/image-based.\n"
+            error_msg += "OCR is not configured (missing API key).\n\n"
+            error_msg += "Please upload a PDF with selectable text."
+            return error_msg, None, ""
+        
+        status_msg = "⏳ Step 2/2: Running Cloud OCR (this may take 30-60 seconds)..."
+        print(status_msg)
+        
+        text_by_page = ocr_pdf_with_cloud(file.name)
+        extraction_method = "Cloud OCR (Google Vision)"
+        
+        if not text_by_page:
+            error_msg = "❌ **OCR Failed**\n\n"
+            error_msg += "Could not extract text using OCR.\n"
+            error_msg += "The PDF may be corrupted or encrypted."
+            return error_msg, None, ""
     
-    # Check if extraction failed
+    total_chars = sum(len(text) for text in text_by_page.values())
+    
+    # Validate
     if total_chars < 100:
-        error_msg = f"⚠️ **Extraction Issue Detected**\n\n"
-        error_msg += f"Only {total_chars} characters extracted from PDF.\n\n"
-        error_msg += f"**Possible causes:**\n"
-        error_msg += f"- PDF is scanned image (needs OCR)\n"
-        error_msg += f"- PDF is encrypted/protected\n"
-        error_msg += f"- PDF is corrupted\n"
-        if not OCR_AVAILABLE:
-            error_msg += f"- OCR not available on server\n\n"
-            error_msg += f"**Note:** This PDF may require OCR processing which is currently unavailable.\n"
-        error_msg += f"\n**Preview of extracted content:**\n"
-        error_msg += f"```\n{list(text_by_page.values())[:300]}\n```"
+        error_msg = f"⚠️ **Insufficient text: {total_chars} characters**\n"
+        error_msg += "Document may be empty or corrupted."
         return error_msg, None, ""
     
-    # Save metadata to Firestore
+    # Save metadata
     try:
         db.collection('documents').add({
             'user_id': user_id,
@@ -171,19 +215,22 @@ def process_document(file, user_id, current_filename):
     except Exception as e:
         print(f"Firestore error: {e}")
     
-    # Create success message with preview
+    # Success message
     success_msg = f"✅ **Document Processed Successfully!**\n\n"
     success_msg += f"📄 **File:** {filename}\n"
     success_msg += f"📊 **Pages:** {len(text_by_page)}\n"
     success_msg += f"📝 **Characters:** {total_chars:,}\n"
     success_msg += f"🔧 **Method:** {extraction_method}\n\n"
-    success_msg += f"**Preview (first 300 chars):**\n"
-    success_msg += f"```\n{list(text_by_page.values())[:300]}...\n```\n\n"
+    
+    first_page_text = list(text_by_page.values())[0]
+    success_msg += f"**Preview:**\n```\n{first_page_text[:300]}...\n```\n\n"
     success_msg += f"✓ Ready to answer questions!"
     
     return success_msg, text_by_page, filename
 
 def answer_question(question, text_by_page, history, user_id, current_filename):
+    """Answer questions using Groq AI"""
+    
     if not user_id:
         return history + [{"role": "assistant", "content": "❌ Please login first"}], ""
     
@@ -193,24 +240,19 @@ def answer_question(question, text_by_page, history, user_id, current_filename):
     if not question or not question.strip():
         return history + [{"role": "assistant", "content": "⚠️ Please enter a question"}], ""
     
-    # Add user question
     history.append({"role": "user", "content": question})
     
     # Build context
     context_parts = []
     for page, text in text_by_page.items():
-        if not text.startswith('[') and not text.startswith('Error'):
-            context_parts.append(f"=== PAGE {page} ===\n{text.strip()}")
+        context_parts.append(f"=== PAGE {page} ===\n{text.strip()}")
     
     context = "\n\n".join(context_parts)
     
-    if len(context) < 100:
-        return history + [{"role": "assistant", "content": "❌ Document content too short. Please upload a valid document."}], ""
-    
-    print(f"\n{'='*80}")
-    print(f"Question: {question}")
-    print(f"Context: {len(context)} chars")
-    print(f"{'='*80}")
+    print(f"\n{'='*60}")
+    print(f"❓ Question: {question[:100]}...")
+    print(f"📊 Context: {len(context):,} characters")
+    print(f"{'='*60}")
     
     prompt = f"""You are an AI assistant helping Chartered Accountants analyze documents.
 
@@ -222,11 +264,11 @@ FULL DOCUMENT CONTENT:
 USER QUESTION: {question}
 
 INSTRUCTIONS:
-1. Carefully read ALL the document content above
-2. Answer ONLY using information from the document
-3. Cite page numbers using [Page X] format
-4. Quote specific text from the document
-5. If info not found, say "The document does not contain information about [topic]"
+1. Read the document carefully
+2. Answer using ONLY information from the document
+3. Cite page numbers as [Page X]
+4. Quote relevant text when answering
+5. If information not found, state: "The document does not contain information about [topic]"
 
 ANSWER:"""
     
@@ -238,17 +280,18 @@ ANSWER:"""
             max_tokens=2048
         )
         answer = response.choices[0].message.content
-        print(f"Answer: {len(answer)} chars\n")
+        print(f"✅ Answer: {len(answer)} chars\n")
         
         history.append({"role": "assistant", "content": answer})
         return history, ""
         
     except Exception as e:
-        print(f"AI Error: {e}")
-        return history + [{"role": "assistant", "content": f"❌ AI Error: {str(e)}"}], ""
+        print(f"❌ Groq Error: {e}\n")
+        history.append({"role": "assistant", "content": f"❌ Error: {str(e)}"})
+        return history, ""
 
 # ========================
-# CHAT HISTORY EXPORT
+# CHAT EXPORT
 # ========================
 
 def export_chat_history(history, user_id, current_filename):
@@ -302,7 +345,7 @@ def export_chat_history_json(history, user_id, current_filename):
         return None
 
 # ========================
-# AUTHENTICATION
+# AUTH
 # ========================
 
 def login_user(email, password):
@@ -366,18 +409,22 @@ with gr.Blocks(title="Legacy Logic Pro") as app:
     with gr.Column(visible=False) as dashboard:
         gr.Markdown("# 🚀 **Legacy Logic Pro**")
         gr.Markdown("### AI-Powered Document Processing for Chartered Accountants")
-        gr.Markdown("**With Page-Level Citations** | Built with ❤️ by Tarun in Mumbai")
+        gr.Markdown("**With Page-Level Citations** | Built by Tarun in Mumbai")
         gr.Markdown("---")
         
         with gr.Tabs():
             with gr.Tab("📄 Process Documents"):
                 gr.Markdown("## Upload and Process Documents")
+                gr.Markdown("⚡ **Smart Processing:** Fast text extraction + Cloud OCR fallback")
+                gr.Markdown("📝 **Supports:** Text PDFs (~5 sec) & Scanned PDFs (~30-60 sec)")
+                
                 file_input = gr.File(label="📁 Upload PDF Document", file_types=[".pdf"])
                 process_btn = gr.Button("🔄 Process Document", variant="primary", size="lg")
-                process_output = gr.Textbox(label="Status", lines=12)
+                process_output = gr.Textbox(label="Status", lines=10)
             
             with gr.Tab("💬 Ask Questions"):
                 gr.Markdown("## Ask Questions About Your Documents")
+                
                 question_input = gr.Textbox(label="Your Question", placeholder="Ask anything...", lines=2)
                 ask_btn = gr.Button("📤 Ask Question", variant="primary", size="lg")
                 chatbot = gr.Chatbot(label="Conversation", height=500)
@@ -394,7 +441,10 @@ with gr.Blocks(title="Legacy Logic Pro") as app:
                 gr.Markdown("**Status:** Active")
                 gr.Markdown("---")
                 gr.Markdown("### 🔒 Privacy")
-                gr.Markdown("- No document content stored\n- Session-only data\n- Clear on logout")
+                gr.Markdown("- No content stored\n- Session-only data\n- Clear on logout")
+                gr.Markdown("---")
+                gr.Markdown("### ⚡ Performance")
+                gr.Markdown("- Text PDFs: ~5-10 seconds\n- Scanned PDFs: ~30-60 seconds\n- Powered by Google Cloud Vision OCR")
         
         gr.Markdown("---")
         with gr.Row():
