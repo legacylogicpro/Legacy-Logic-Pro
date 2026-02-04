@@ -4,7 +4,6 @@ groq==0.9.0
 httpx==0.24.1
 httpcore==0.17.3
 PyPDF2
-pytesseract
+google-cloud-vision
 pdf2image
 Pillow
-python-docx
