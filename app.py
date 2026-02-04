@@ -12,8 +12,6 @@ from pdf2image import convert_from_path
 from PIL import Image
 import io
 import base64
-from google.cloud import vision
-from google.oauth2 import service_account
 
 # Initialize Firebase
 if not firebase_admin._apps:
@@ -34,7 +32,7 @@ if not firebase_admin._apps:
 db = firestore.client()
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-# Initialize Google Cloud Vision (use API key method for simplicity)
+# Google Cloud Vision API Key
 GOOGLE_VISION_API_KEY = os.environ.get("GOOGLE_CLOUD_VISION_API_KEY")
 
 # ========================
@@ -96,7 +94,7 @@ def ocr_image_with_google_vision(image):
             }]
         }
         
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, timeout=30)
         
         if response.status_code == 200:
             result = response.json()
@@ -110,7 +108,7 @@ def ocr_image_with_google_vision(image):
         print(f"Google Vision OCR Error: {e}")
         return ""
 
-def ocr_pdf_with_cloud(pdf_path, progress_callback=None):
+def ocr_pdf_with_cloud(pdf_path):
     """OCR entire PDF using Google Cloud Vision"""
     try:
         print(f"\n{'='*60}")
@@ -126,9 +124,7 @@ def ocr_pdf_with_cloud(pdf_path, progress_callback=None):
         
         for page_num, image in enumerate(images, start=1):
             try:
-                if progress_callback:
-                    progress_callback(f"OCR processing page {page_num}/{total_pages}...")
-                
+                print(f"  Processing page {page_num}/{total_pages}...")
                 text = ocr_image_with_google_vision(image)
                 
                 if text and text.strip():
@@ -167,8 +163,7 @@ def process_document(file, user_id, current_filename):
         return "❌ Only PDF files are supported", None, ""
     
     # Step 1: Try fast text extraction
-    status_msg = "⏳ Step 1/2: Extracting text from PDF..."
-    print(status_msg)
+    print("⏳ Step 1/2: Extracting text from PDF...")
     
     text_by_page = extract_text_from_pdf_fast(file.name)
     extraction_method = "Text Extraction"
@@ -182,8 +177,7 @@ def process_document(file, user_id, current_filename):
             error_msg += "Please upload a PDF with selectable text."
             return error_msg, None, ""
         
-        status_msg = "⏳ Step 2/2: Running Cloud OCR (this may take 30-60 seconds)..."
-        print(status_msg)
+        print("⏳ Step 2/2: Running Cloud OCR (this may take 30-60 seconds)...")
         
         text_by_page = ocr_pdf_with_cloud(file.name)
         extraction_method = "Cloud OCR (Google Vision)"
@@ -383,9 +377,46 @@ def logout_user():
 # ========================
 
 custom_css = """
-.login-container {max-width: 500px; margin: 100px auto; padding: 40px;}
-.brand-title {font-size: 48px !important; font-weight: bold !important; text-align: center; margin-bottom: 10px;}
-.brand-subtitle {font-size: 18px; text-align: center; margin-bottom: 40px; color: #888;}
+.login-container {
+    max-width: 500px; 
+    margin: 50px auto; 
+    padding: 40px;
+}
+.logo-container {
+    text-align: center;
+    margin-bottom: 30px;
+}
+.logo-img {
+    width: 120px;
+    height: 120px;
+    margin: 0 auto 20px;
+    display: block;
+}
+.brand-title {
+    font-size: 42px !important; 
+    font-weight: bold !important; 
+    text-align: center; 
+    margin-bottom: 10px;
+    background: linear-gradient(135deg, #2563EB 0%, #8B5CF6 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+.brand-subtitle {
+    font-size: 16px; 
+    text-align: center; 
+    margin-bottom: 30px; 
+    color: #888;
+}
+.dashboard-header {
+    text-align: center;
+    margin-bottom: 20px;
+}
+.dashboard-logo {
+    width: 80px;
+    height: 80px;
+    margin: 0 auto 15px;
+    display: block;
+}
 """
 
 with gr.Blocks(title="Legacy Logic Pro") as app:
@@ -394,10 +425,19 @@ with gr.Blocks(title="Legacy Logic Pro") as app:
     text_by_page_state = gr.State(None)
     current_filename_state = gr.State("")
     
+    # ============ LOGIN SCREEN ============
     with gr.Column(visible=True, elem_classes="login-container") as login_screen:
+        # Logo
+        gr.HTML("""
+            <div class="logo-container">
+                <img src="file/logo.png" class="logo-img" alt="Legacy Logic Pro Logo">
+            </div>
+        """)
+        
         gr.Markdown("# **Legacy Logic Pro**", elem_classes="brand-title")
         gr.Markdown("AI-Powered Document Processing for Chartered Accountants", elem_classes="brand-subtitle")
         gr.Markdown("---")
+        
         gr.Markdown("### 🔐 Login to Continue")
         email_input = gr.Textbox(label="📧 Email", placeholder="Enter your email")
         password_input = gr.Textbox(label="🔒 Password", type="password", placeholder="Enter your password")
@@ -406,45 +446,62 @@ with gr.Blocks(title="Legacy Logic Pro") as app:
         gr.Markdown("---")
         gr.Markdown("*Contact admin to create an account*")
     
+    # ============ DASHBOARD ============
     with gr.Column(visible=False) as dashboard:
+        # Header with logo
+        gr.HTML("""
+            <div class="dashboard-header">
+                <img src="file/logo.png" class="dashboard-logo" alt="Legacy Logic Pro">
+            </div>
+        """)
+        
         gr.Markdown("# 🚀 **Legacy Logic Pro**")
         gr.Markdown("### AI-Powered Document Processing for Chartered Accountants")
-        gr.Markdown("**With Page-Level Citations** | Built by Tarun in Mumbai")
+        gr.Markdown("**With Page-Level Citations** | Built by Tarun")
         gr.Markdown("---")
         
         with gr.Tabs():
+            # Process Documents
             with gr.Tab("📄 Process Documents"):
                 gr.Markdown("## Upload and Process Documents")
                 gr.Markdown("⚡ **Smart Processing:** Fast text extraction + Cloud OCR fallback")
-                gr.Markdown("📝 **Supports:** Text PDFs (~5 sec) & Scanned PDFs (~30-60 sec)")
+                gr.Markdown("📝 **Supports:** Text PDFs (~5-10 sec) & Scanned PDFs (~30-60 sec with OCR)")
                 
                 file_input = gr.File(label="📁 Upload PDF Document", file_types=[".pdf"])
                 process_btn = gr.Button("🔄 Process Document", variant="primary", size="lg")
                 process_output = gr.Textbox(label="Status", lines=10)
             
+            # Ask Questions
             with gr.Tab("💬 Ask Questions"):
                 gr.Markdown("## Ask Questions About Your Documents")
+                gr.Markdown("Get AI-powered answers with page-level citations")
                 
-                question_input = gr.Textbox(label="Your Question", placeholder="Ask anything...", lines=2)
+                question_input = gr.Textbox(label="Your Question", placeholder="Ask anything about the document...", lines=2)
                 ask_btn = gr.Button("📤 Ask Question", variant="primary", size="lg")
                 chatbot = gr.Chatbot(label="Conversation", height=500)
                 
                 gr.Markdown("---")
-                gr.Markdown("### 💾 Export Session")
+                gr.Markdown("### 💾 Export Current Session")
                 with gr.Row():
-                    export_txt_btn = gr.Button("📄 Text", size="sm", variant="secondary")
-                    export_json_btn = gr.Button("📋 JSON", size="sm", variant="secondary")
+                    export_txt_btn = gr.Button("📄 Download as Text", size="sm", variant="secondary")
+                    export_json_btn = gr.Button("📋 Download as JSON", size="sm", variant="secondary")
                 export_file = gr.File(label="Download")
             
+            # Account
             with gr.Tab("👤 Account"):
                 gr.Markdown("## Account Information")
                 gr.Markdown("**Status:** Active")
                 gr.Markdown("---")
-                gr.Markdown("### 🔒 Privacy")
-                gr.Markdown("- No content stored\n- Session-only data\n- Clear on logout")
+                gr.Markdown("### 🔒 Privacy & Security")
+                gr.Markdown("- ✅ No document content stored in database")
+                gr.Markdown("- ✅ All chat history cleared on logout")
+                gr.Markdown("- ✅ Session-only data processing")
+                gr.Markdown("- ✅ End-to-end encryption for API calls")
                 gr.Markdown("---")
                 gr.Markdown("### ⚡ Performance")
-                gr.Markdown("- Text PDFs: ~5-10 seconds\n- Scanned PDFs: ~30-60 seconds\n- Powered by Google Cloud Vision OCR")
+                gr.Markdown("- **Text PDFs:** ~5-10 seconds processing")
+                gr.Markdown("- **Scanned PDFs:** ~30-60 seconds (Cloud OCR)")
+                gr.Markdown("- **Powered by:** Google Cloud Vision API")
         
         gr.Markdown("---")
         with gr.Row():
@@ -452,6 +509,7 @@ with gr.Blocks(title="Legacy Logic Pro") as app:
             logout_btn = gr.Button("🚪 Logout", variant="secondary", size="lg", scale=1)
             gr.Column(scale=2)
     
+    # Event handlers
     login_btn.click(login_user, [email_input, password_input], [login_status, user_id_state, login_screen, dashboard])
     process_btn.click(process_document, [file_input, user_id_state, current_filename_state], [process_output, text_by_page_state, current_filename_state])
     ask_btn.click(answer_question, [question_input, text_by_page_state, chatbot, user_id_state, current_filename_state], [chatbot, question_input])
@@ -465,5 +523,6 @@ if __name__ == "__main__":
         css=custom_css,
         server_name="0.0.0.0",
         server_port=int(os.environ.get("PORT", 10000)),
-        share=False
+        share=False,
+        favicon_path="favicon.ico"
     )
