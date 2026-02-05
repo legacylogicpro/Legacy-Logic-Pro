@@ -536,14 +536,14 @@ with gr.Blocks(title="Legacy Logic Pro") as app:
                 
                 file_input = gr.File(label="📁 Upload PDF Document", file_types=[".pdf"])
                 process_btn = gr.Button("🔄 Process Document", variant="primary", size="lg")
-                process_output = gr.Textbox(label="Processing Status", lines=12, show_copy_button=True)
+                process_output = gr.Textbox(label="Processing Status", lines=12)
             
             with gr.Tab("💬 Ask Questions"):
                 gr.Markdown("## Ask Questions About Your Documents")
                 
                 question_input = gr.Textbox(label="Your Question", placeholder="Ask anything...", lines=2)
                 ask_btn = gr.Button("📤 Ask Question", variant="primary", size="lg")
-                chatbot = gr.Chatbot(label="Conversation", height=500, show_copy_button=True)
+                chatbot = gr.Chatbot(label="Conversation", height=500)
                 
                 gr.Markdown("---")
                 gr.Markdown("### 💾 Export Session")
