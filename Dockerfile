@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# Install poppler for pdf2image (needed to convert PDF to images for OCR)
+# Install poppler-utils for pdf2image
 RUN apt-get update && apt-get install -y \
     poppler-utils \
     && rm -rf /var/lib/apt/lists/*
