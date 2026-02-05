@@ -12,6 +12,7 @@ from pdf2image import convert_from_path
 from PIL import Image
 import io
 import base64
+import requests
 
 # Initialize Firebase
 if not firebase_admin._apps:
@@ -43,45 +44,67 @@ def extract_text_from_pdf_fast(pdf_path):
     """Fast text extraction using PyPDF2"""
     try:
         print(f"\n{'='*60}")
-        print(f"📄 Extracting text: {pdf_path.split('/')[-1]}")
+        print(f"📄 Step 1: Fast text extraction")
+        print(f"File: {pdf_path.split('/')[-1]}")
         print(f"{'='*60}")
         
         reader = PdfReader(pdf_path)
         total_pages = len(reader.pages)
         text_by_page = {}
         
+        print(f"Total pages: {total_pages}")
+        
         for page_num, page in enumerate(reader.pages, start=1):
             try:
                 text = page.extract_text()
-                if text and len(text.strip()) > 20:
+                if text and text.strip():
                     text_by_page[page_num] = text.strip()
-                    print(f"  ✓ Page {page_num}/{total_pages}: {len(text):,} chars")
+                    char_count = len(text.strip())
+                    print(f"  ✓ Page {page_num}: {char_count:,} chars")
                 else:
-                    print(f"  ✗ Page {page_num}/{total_pages}: No text")
+                    print(f"  ✗ Page {page_num}: No text (may be image)")
             except Exception as e:
-                print(f"  ✗ Page {page_num}/{total_pages}: {e}")
+                print(f"  ✗ Page {page_num}: Error - {str(e)}")
         
         total_chars = sum(len(text) for text in text_by_page.values())
-        print(f"Total: {total_chars:,} characters from {len(text_by_page)} pages")
-        print(f"{'='*60}\n")
+        print(f"Total extracted: {total_chars:,} characters from {len(text_by_page)} pages")
         
-        return text_by_page if total_chars > 100 else None
+        # If we got meaningful text, return it
+        if total_chars > 500:
+            print("✅ Sufficient text found - skipping OCR")
+            print(f"{'='*60}\n")
+            return text_by_page
+        else:
+            print(f"⚠️ Only {total_chars} chars - will try OCR")
+            print(f"{'='*60}\n")
+            return None
         
     except Exception as e:
-        print(f"PDF Error: {e}")
+        print(f"❌ Text extraction error: {str(e)}")
+        traceback.print_exc()
         return None
 
-def ocr_image_with_google_vision(image):
+def ocr_image_with_google_vision(image, page_num, total_pages):
     """OCR single image using Google Cloud Vision API"""
     try:
-        import requests
-        
+        # Convert PIL Image to bytes
         img_byte_arr = io.BytesIO()
-        image.save(img_byte_arr, format='PNG')
+        
+        # Resize large images to save API quota and speed up
+        max_dimension = 2000
+        if image.width > max_dimension or image.height > max_dimension:
+            ratio = min(max_dimension / image.width, max_dimension / image.height)
+            new_size = (int(image.width * ratio), int(image.height * ratio))
+            image = image.resize(new_size, Image.Resampling.LANCZOS)
+            print(f"  Resized to: {new_size[0]}x{new_size[1]}")
+        
+        image.save(img_byte_arr, format='PNG', optimize=True)
         img_byte_arr = img_byte_arr.getvalue()
         
+        # Encode to base64
         image_base64 = base64.b64encode(img_byte_arr).decode('utf-8')
         
+        # Call Google Vision API with retry
         url = f"https://vision.googleapis.com/v1/images:annotate?key={GOOGLE_VISION_API_KEY}"
         
         payload = {
@@ -91,56 +114,90 @@ def ocr_image_with_google_vision(image):
             }]
         }
         
-        response = requests.post(url, json=payload, timeout=30)
+        print(f"  Calling Google Vision API for page {page_num}/{total_pages}...")
+        response = requests.post(url, json=payload, timeout=60)
         
         if response.status_code == 200:
             result = response.json()
+            
+            # Check for errors
             if 'responses' in result and len(result['responses']) > 0:
-                if 'fullTextAnnotation' in result['responses'][0]:
-                    return result['responses'][0]['fullTextAnnotation']['text']
+                resp = result['responses'][0]
+                
+                # Check for API errors
+                if 'error' in resp:
+                    error_msg = resp['error'].get('message', 'Unknown error')
+                    print(f"  ❌ API Error: {error_msg}")
+                    return ""
+                
+                # Extract text
+                if 'fullTextAnnotation' in resp:
+                    text = resp['fullTextAnnotation']['text']
+                    print(f"  ✓ Page {page_num}/{total_pages}: {len(text):,} chars extracted")
+                    return text
+                else:
+                    print(f"  ⚠️ Page {page_num}/{total_pages}: No text detected")
+                    return ""
+        else:
+            print(f"  ❌ HTTP {response.status_code}: {response.text[:200]}")
+            return ""
         
         return ""
         
+    except requests.exceptions.Timeout:
+        print(f"  ⏱️ Timeout on page {page_num}")
+        return ""
     except Exception as e:
-        print(f"Google Vision OCR Error: {e}")
+        print(f"  ❌ OCR Error page {page_num}: {str(e)}")
         return ""
 
 def ocr_pdf_with_cloud(pdf_path):
     """OCR entire PDF using Google Cloud Vision"""
     try:
         print(f"\n{'='*60}")
-        print(f"🔍 OCR Processing (Cloud): {pdf_path.split('/')[-1]}")
+        print(f"🔍 Step 2: Cloud OCR Processing")
+        print(f"File: {pdf_path.split('/')[-1]}")
         print(f"{'='*60}")
         
-        images = convert_from_path(pdf_path, dpi=200)
+        if not GOOGLE_VISION_API_KEY:
+            print("❌ Google Vision API key not configured")
+            return None
+        
+        print("Converting PDF to images...")
+        
+        # Convert PDF to images with lower DPI for speed
+        images = convert_from_path(pdf_path, dpi=150)
         total_pages = len(images)
         text_by_page = {}
         
-        print(f"Converting {total_pages} pages to text...")
+        print(f"Total pages: {total_pages}")
+        print(f"Starting OCR processing...\n")
         
         for page_num, image in enumerate(images, start=1):
             try:
-                print(f"  Processing page {page_num}/{total_pages}...")
-                text = ocr_image_with_google_vision(image)
+                text = ocr_image_with_google_vision(image, page_num, total_pages)
                 
                 if text and text.strip():
                     text_by_page[page_num] = text.strip()
-                    print(f"  ✓ Page {page_num}/{total_pages}: {len(text):,} chars")
-                else:
-                    print(f"  ✗ Page {page_num}/{total_pages}: No text")
                     
             except Exception as e:
-                print(f"  ✗ Page {page_num}/{total_pages}: {e}")
+                print(f"  ✗ Page {page_num}: {str(e)}")
         
         total_chars = sum(len(text) for text in text_by_page.values())
-        print(f"OCR Complete: {total_chars:,} characters from {len(text_by_page)} pages")
+        
+        if text_by_page:
+            print(f"\n✅ OCR Complete!")
+            print(f"Extracted: {total_chars:,} characters from {len(text_by_page)} pages")
+        else:
+            print(f"\n❌ OCR failed - no text extracted")
+        
         print(f"{'='*60}\n")
         
         return text_by_page if text_by_page else None
         
     except Exception as e:
-        print(f"OCR Error: {e}")
-        print(traceback.format_exc())
+        print(f"❌ OCR processing error: {str(e)}")
+        traceback.print_exc()
         return None
 
 def process_document(file, user_id, current_filename):
@@ -158,37 +215,51 @@ def process_document(file, user_id, current_filename):
     if file_ext != 'pdf':
         return "❌ Only PDF files are supported", None, ""
     
-    print("⏳ Step 1/2: Extracting text from PDF...")
+    print(f"\n🚀 Processing document: {filename}")
     
+    # Step 1: Try fast text extraction
     text_by_page = extract_text_from_pdf_fast(file.name)
-    extraction_method = "Text Extraction"
+    extraction_method = "Fast Text Extraction"
     
+    # Step 2: If text extraction failed or insufficient, try OCR
     if not text_by_page:
         if not GOOGLE_VISION_API_KEY:
             error_msg = "⚠️ **No readable text found**\n\n"
-            error_msg += "This PDF appears to be scanned/image-based.\n"
-            error_msg += "OCR is not configured (missing API key).\n\n"
-            error_msg += "Please upload a PDF with selectable text."
+            error_msg += "This PDF appears to be scanned/image-based.\n\n"
+            error_msg += "**OCR is not configured** - Google Vision API key is missing.\n\n"
+            error_msg += "Please either:\n"
+            error_msg += "- Upload a PDF with selectable text, OR\n"
+            error_msg += "- Configure Google Cloud Vision API for OCR\n\n"
+            error_msg += "Contact admin for OCR setup."
             return error_msg, None, ""
         
-        print("⏳ Step 2/2: Running Cloud OCR (this may take 30-60 seconds)...")
-        
+        # Try OCR
         text_by_page = ocr_pdf_with_cloud(file.name)
         extraction_method = "Cloud OCR (Google Vision)"
         
         if not text_by_page:
-            error_msg = "❌ **OCR Failed**\n\n"
-            error_msg += "Could not extract text using OCR.\n"
-            error_msg += "The PDF may be corrupted or encrypted."
+            error_msg = "❌ **Processing Failed**\n\n"
+            error_msg += "Could not extract text using both methods:\n"
+            error_msg += "- Fast text extraction: No selectable text\n"
+            error_msg += "- Cloud OCR: Failed or no text detected\n\n"
+            error_msg += "**Possible reasons:**\n"
+            error_msg += "- PDF is corrupted or encrypted\n"
+            error_msg += "- Image quality too poor for OCR\n"
+            error_msg += "- API quota exceeded\n"
+            error_msg += "- Network/timeout issues\n\n"
+            error_msg += "Please try a different PDF or contact support."
             return error_msg, None, ""
     
     total_chars = sum(len(text) for text in text_by_page.values())
     
+    # Validate minimum content
     if total_chars < 100:
-        error_msg = f"⚠️ **Insufficient text: {total_chars} characters**\n"
-        error_msg += "Document may be empty or corrupted."
+        error_msg = f"⚠️ **Insufficient content extracted**\n\n"
+        error_msg += f"Only {total_chars} characters from {len(text_by_page)} pages.\n"
+        error_msg += f"Document may be empty or have very poor quality."
         return error_msg, None, ""
     
+    # Save metadata to Firestore
     try:
         db.collection('documents').add({
             'user_id': user_id,
@@ -198,18 +269,29 @@ def process_document(file, user_id, current_filename):
             'characters': total_chars,
             'method': extraction_method
         })
+        print(f"✅ Metadata saved to Firestore")
     except Exception as e:
-        print(f"Firestore error: {e}")
+        print(f"⚠️ Firestore save error: {e}")
     
+    # Success message with preview
     success_msg = f"✅ **Document Processed Successfully!**\n\n"
     success_msg += f"📄 **File:** {filename}\n"
     success_msg += f"📊 **Pages:** {len(text_by_page)}\n"
     success_msg += f"📝 **Characters:** {total_chars:,}\n"
-    success_msg += f"🔧 **Method:** {extraction_method}\n\n"
+    success_msg += f"🔧 **Method:** {extraction_method}\n"
     
+    # Add timing info
+    if extraction_method == "Fast Text Extraction":
+        success_msg += f"⚡ **Processing Time:** ~5-10 seconds\n\n"
+    else:
+        success_msg += f"⏱️ **Processing Time:** ~30-90 seconds (OCR)\n\n"
+    
+    # Show preview of first page
     first_page_text = list(text_by_page.values())[0]
-    success_msg += f"**Preview:**\n```\n{first_page_text[:300]}...\n```\n\n"
-    success_msg += f"✓ Ready to answer questions!"
+    preview_length = min(300, len(first_page_text))
+    success_msg += f"**Content Preview (Page 1):**\n"
+    success_msg += f"```\n{first_page_text[:preview_length]}...\n```\n\n"
+    success_msg += f"✓ **Ready to answer questions!**"
     
     return success_msg, text_by_page, filename
 
@@ -225,8 +307,10 @@ def answer_question(question, text_by_page, history, user_id, current_filename):
     if not question or not question.strip():
         return history + [{"role": "assistant", "content": "⚠️ Please enter a question"}], ""
     
+    # Add user question to history
     history.append({"role": "user", "content": question})
     
+    # Build context from all pages
     context_parts = []
     for page, text in text_by_page.items():
         context_parts.append(f"=== PAGE {page} ===\n{text.strip()}")
@@ -235,10 +319,10 @@ def answer_question(question, text_by_page, history, user_id, current_filename):
     
     print(f"\n{'='*60}")
     print(f"❓ Question: {question[:100]}...")
-    print(f"📊 Context: {len(context):,} characters")
+    print(f"📊 Context: {len(context):,} characters from {len(text_by_page)} pages")
     print(f"{'='*60}")
     
-    prompt = f"""You are an AI assistant helping Chartered Accountants analyze documents.
+    prompt = f"""You are an AI assistant helping Chartered Accountants analyze tax and financial documents.
 
 DOCUMENT: {current_filename}
 
@@ -248,15 +332,17 @@ FULL DOCUMENT CONTENT:
 USER QUESTION: {question}
 
 INSTRUCTIONS:
-1. Read the document carefully
-2. Answer using ONLY information from the document
-3. Cite page numbers as [Page X]
-4. Quote relevant text when answering
-5. If information not found, state: "The document does not contain information about [topic]"
+1. Carefully read the entire document content above
+2. Answer using ONLY information found in the document
+3. Always cite page numbers in [Page X] format when referencing information
+4. Quote specific text from the document to support your answer
+5. If the information is not in the document, clearly state: "The document does not contain information about [topic]"
+6. Be precise, accurate, and professional in your response
 
 ANSWER:"""
     
     try:
+        print("🤖 Calling Groq AI...")
         response = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
@@ -264,22 +350,25 @@ ANSWER:"""
             max_tokens=2048
         )
         answer = response.choices[0].message.content
-        print(f"✅ Answer: {len(answer)} chars\n")
+        print(f"✅ Answer generated: {len(answer)} characters\n")
         
+        # Add assistant answer to history
         history.append({"role": "assistant", "content": answer})
         return history, ""
         
     except Exception as e:
-        print(f"❌ Groq Error: {e}\n")
-        history.append({"role": "assistant", "content": f"❌ Error: {str(e)}"})
+        print(f"❌ Groq API Error: {str(e)}\n")
+        error_msg = f"❌ **AI Error:** {str(e)}\n\nPlease try again."
+        history.append({"role": "assistant", "content": error_msg})
         return history, ""
 
 # ========================
-# CHAT EXPORT
+# CHAT HISTORY EXPORT
 # ========================
 
 def export_chat_history(history, user_id, current_filename):
-    if not history:
+    """Export chat history as text file"""
+    if not history or len(history) == 0:
         return None
     
     try:
@@ -303,12 +392,15 @@ def export_chat_history(history, user_id, current_filename):
         with open(filename, 'w', encoding='utf-8') as f:
             f.write(content)
         
+        print(f"✅ Chat history exported: {filename}")
         return filename
-    except:
+    except Exception as e:
+        print(f"❌ Export error: {e}")
         return None
 
 def export_chat_history_json(history, user_id, current_filename):
-    if not history:
+    """Export chat history as JSON file"""
+    if not history or len(history) == 0:
         return None
     
     try:
@@ -316,23 +408,28 @@ def export_chat_history_json(history, user_id, current_filename):
         filename = f"chat_history_{timestamp}.json"
         
         data = {
-            "date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            "document": current_filename or "Unknown",
-            "messages": history
+            "session_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            "user_id": user_id if user_id else "unknown",
+            "document": current_filename if current_filename else "Unknown",
+            "messages": history,
+            "total_messages": len(history)
         }
         
         with open(filename, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
         
+        print(f"✅ Chat history exported: {filename}")
         return filename
-    except:
+    except Exception as e:
+        print(f"❌ Export error: {e}")
         return None
 
 # ========================
-# AUTH
+# AUTHENTICATION
 # ========================
 
 def login_user(email, password):
+    """Authenticate user"""
     if not email or not email.strip():
         return "❌ Please enter an email", None, gr.update(visible=True), gr.update(visible=False)
     
@@ -343,7 +440,7 @@ def login_user(email, password):
         users_ref = db.collection('users')
         query = users_ref.where(filter=FieldFilter('email', '==', email.strip().lower())).limit(1).get()
         
-        if not query:
+        if not query or len(query) == 0:
             return "❌ No account found", None, gr.update(visible=True), gr.update(visible=False)
         
         user_doc = query[0]
@@ -352,14 +449,18 @@ def login_user(email, password):
         if user_data.get('password', '') == password:
             user_id = user_doc.id
             user_name = user_data.get('name', 'User')
+            print(f"✅ User logged in: {user_name}")
             return f"✅ Welcome back, {user_name}!", user_id, gr.update(visible=False), gr.update(visible=True)
         else:
             return "❌ Incorrect password", None, gr.update(visible=True), gr.update(visible=False)
             
     except Exception as e:
+        print(f"❌ Login error: {e}")
         return f"❌ Error: {str(e)}", None, gr.update(visible=True), gr.update(visible=False)
 
 def logout_user():
+    """Logout user"""
+    print("👋 User logged out")
     return None, None, [], "", "", gr.update(visible=True), gr.update(visible=False), "Logged out"
 
 # ========================
@@ -390,7 +491,6 @@ custom_css = """
 }
 """
 
-# Gradio 6.0 compatible
 with gr.Blocks(title="Legacy Logic Pro") as app:
     
     user_id_state = gr.State(None)
@@ -399,9 +499,8 @@ with gr.Blocks(title="Legacy Logic Pro") as app:
     
     # ============ LOGIN SCREEN ============
     with gr.Column(visible=True, elem_classes="login-container") as login_screen:
-        # Logo - Use your actual logo if file exists, otherwise emoji
         if os.path.exists("logo.png"):
-            gr.Image("logo.png", height=120, width=120, show_label=False, show_download_button=False, container=False, elem_classes="logo-container")
+            gr.Image("logo.png", height=120, width=120, show_label=False, show_download_button=False, container=False)
         else:
             gr.Markdown('<div class="logo-container"><div style="font-size: 80px;">🚀</div></div>')
         
@@ -419,7 +518,6 @@ with gr.Blocks(title="Legacy Logic Pro") as app:
     
     # ============ DASHBOARD ============
     with gr.Column(visible=False) as dashboard:
-        # Dashboard logo
         if os.path.exists("logo.png"):
             gr.Image("logo.png", height=70, width=70, show_label=False, show_download_button=False, container=False)
         else:
@@ -427,25 +525,25 @@ with gr.Blocks(title="Legacy Logic Pro") as app:
         
         gr.Markdown("# 🚀 **Legacy Logic Pro**")
         gr.Markdown("### AI-Powered Document Processing for Chartered Accountants")
-        gr.Markdown("**With Page-Level Citations** | Built by Tarun")
+        gr.Markdown("**With Page-Level Citations** | Built by TARUN")
         gr.Markdown("---")
         
         with gr.Tabs():
             with gr.Tab("📄 Process Documents"):
                 gr.Markdown("## Upload and Process Documents")
                 gr.Markdown("⚡ **Smart Processing:** Fast text extraction + Cloud OCR fallback")
-                gr.Markdown("📝 **Supports:** Text PDFs (~5-10 sec) & Scanned PDFs (~30-60 sec)")
+                gr.Markdown("📝 **Supports:** Text PDFs (~5-10 sec) & Scanned PDFs (~30-90 sec with OCR)")
                 
                 file_input = gr.File(label="📁 Upload PDF Document", file_types=[".pdf"])
                 process_btn = gr.Button("🔄 Process Document", variant="primary", size="lg")
-                process_output = gr.Textbox(label="Status", lines=10)
+                process_output = gr.Textbox(label="Processing Status", lines=12, show_copy_button=True)
             
             with gr.Tab("💬 Ask Questions"):
                 gr.Markdown("## Ask Questions About Your Documents")
                 
                 question_input = gr.Textbox(label="Your Question", placeholder="Ask anything...", lines=2)
                 ask_btn = gr.Button("📤 Ask Question", variant="primary", size="lg")
-                chatbot = gr.Chatbot(label="Conversation", height=500)
+                chatbot = gr.Chatbot(label="Conversation", height=500, show_copy_button=True)
                 
                 gr.Markdown("---")
                 gr.Markdown("### 💾 Export Session")
@@ -456,13 +554,13 @@ with gr.Blocks(title="Legacy Logic Pro") as app:
             
             with gr.Tab("👤 Account"):
                 gr.Markdown("## Account Information")
-                gr.Markdown("**Status:** Active")
+                gr.Markdown("**Status:** ✅ Active")
                 gr.Markdown("---")
                 gr.Markdown("### 🔒 Privacy")
                 gr.Markdown("- No content stored\n- Session-only\n- Cleared on logout")
                 gr.Markdown("---")
                 gr.Markdown("### ⚡ Performance")
-                gr.Markdown("- Text PDFs: ~5-10 sec\n- Scanned PDFs: ~30-60 sec\n- Google Cloud Vision OCR")
+                gr.Markdown("- Text PDFs: ~5-10 sec\n- Scanned PDFs: ~30-90 sec (OCR)\n- Google Cloud Vision API")
         
         gr.Markdown("---")
         with gr.Row():
@@ -470,7 +568,7 @@ with gr.Blocks(title="Legacy Logic Pro") as app:
             logout_btn = gr.Button("🚪 Logout", variant="secondary", size="lg", scale=1)
             gr.Column(scale=2)
     
-    # Event handlers
+    # EVENT HANDLERS
     login_btn.click(login_user, [email_input, password_input], [login_status, user_id_state, login_screen, dashboard])
     process_btn.click(process_document, [file_input, user_id_state, current_filename_state], [process_output, text_by_page_state, current_filename_state])
     ask_btn.click(answer_question, [question_input, text_by_page_state, chatbot, user_id_state, current_filename_state], [chatbot, question_input])
@@ -479,8 +577,12 @@ with gr.Blocks(title="Legacy Logic Pro") as app:
     logout_btn.click(logout_user, None, [user_id_state, text_by_page_state, current_filename_state, chatbot, question_input, login_screen, dashboard, login_status])
 
 if __name__ == "__main__":
+    print("\n" + "="*60)
+    print("🚀 LEGACY LOGIC PRO")
+    print("="*60 + "\n")
+    
     app.launch(
-        css=custom_css,  # Fixed for Gradio 6.0
+        css=custom_css,
         server_name="0.0.0.0",
         server_port=int(os.environ.get("PORT", 10000)),
         share=False
