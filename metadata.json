@@ -1,0 +1,6 @@
+{
+  "name": "Legacy Logic Pro",
+  "description": "Document intelligence and practice management platform for Chartered Accountant firms in India",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
