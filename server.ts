@@ -1,15 +1,14 @@
 /**
- * Legacy Logic Pro — Full-Stack Server Entry Point
+ * Legacy Logic Pro   Full-Stack Server Entry Point
  * Express server running on port 3000 with Vite middlewares mounted in dev.
- * Provides server-side Gemini 3.1 Pro Thinking Mode API for session financial advisory.
+ * Provides server-side Groq AI (Llama 3.3 70B) API for session financial advisory.
  */
-
 import express, { Request, Response } from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
-import { GoogleGenAI, ThinkingLevel } from '@google/genai';
+import Groq from 'groq-sdk';
 
 dotenv.config();
 
@@ -33,7 +32,7 @@ async function startServer() {
     });
   });
 
-  // AI Query Endpoint with Gemini 3.1 Pro High Thinking Mode
+  // AI Query Endpoint with Groq Llama 3.3 70B Versatile
   app.post('/api/ai/query', async (req: Request, res: Response) => {
     const { query, sessionData, enableAI } = req.body;
 
@@ -49,12 +48,12 @@ async function startServer() {
     }
 
     try {
-      const apiKey = process.env.GEMINI_API_KEY;
+      const apiKey = process.env.GROQ_API_KEY;
       if (!apiKey) {
-        return res.status(500).json({ error: 'GEMINI_API_KEY environment variable is not configured.' });
+        return res.status(500).json({ error: 'GROQ_API_KEY environment variable is not configured.' });
       }
 
-      const ai = new GoogleGenAI({ apiKey });
+      const groq = new Groq({ apiKey });
 
       // Prepare context summary of currently processed session data
       const contextSummary = {
@@ -79,9 +78,7 @@ async function startServer() {
         })) || [],
       };
 
-      const systemPrompt = `
-You are an expert Chartered Accountant and senior tax/audit partner in India assisting on the "Legacy Logic Pro" practice management platform.
-You are analyzing client accounting data.
+      const systemPrompt = `You are an expert Chartered Accountant and senior tax/audit partner in India assisting on the "Legacy Logic Pro" practice management platform. You are analyzing client accounting data.
 
 Context of currently loaded financial session:
 ${JSON.stringify(contextSummary, null, 2)}
@@ -90,31 +87,27 @@ Requirements:
 1. Always format monetary values in the Indian Numbering System (e.g. ₹12,34,567.89, lakhs and crores).
 2. Ground all answers strictly in Indian accounting standards, Income Tax Act, 1961, and CGST/SGST Acts.
 3. Keep your response professional, precise, structured, and insightful.
-4. Conclude with a reminder that answers are advisory working papers and must be verified before statutory filing.
-      `.trim();
+4. Conclude with a reminder that answers are advisory working papers and must be verified before statutory filing.`.trim();
 
-      const userPrompt = `${systemPrompt}\n\nUser Question: ${query}`;
-
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.1-pro-preview',
-        contents: userPrompt,
-        config: {
-          thinkingConfig: {
-            thinkingLevel: ThinkingLevel.HIGH,
-          },
-        },
+      const completion = await groq.chat.completions.create({
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: query },
+        ],
+        model: 'llama-3.3-70b-versatile',
+        temperature: 0.2,
       });
 
-      const answerText = response.text || 'No response generated from model.';
+      const answerText = completion.choices[0]?.message?.content || 'No response generated from model.';
 
       return res.json({
         answer: answerText,
         advisory: 'Advisory only. Review against statutory vouchers and source documents before final audit sign-off.',
-        modelUsed: 'gemini-3.1-pro-preview',
-        thinkingLevel: 'HIGH',
+        modelUsed: 'llama-3.3-70b-versatile',
+        provider: 'Groq Cloud',
       });
     } catch (err: any) {
-      console.error('Gemini API Error:', err);
+      console.error('Groq API Error:', err);
       return res.status(500).json({
         error: `AI processing failed: ${err.message || 'Internal error'}`,
       });
